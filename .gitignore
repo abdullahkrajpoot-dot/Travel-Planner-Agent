@@ -1,0 +1,21 @@
+.venv/
+.venv-*/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.streamlit/
+.tools/
+.vscode/
+app.py.backup
+New Text Document.txt
+scratch/
+test_images.py
+*.jpg
+*.png
+*.pdf
+*.tmp
+*.log
+Thumbs.db
+Desktop.ini
