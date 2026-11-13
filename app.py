@@ -1,4 +1,5 @@
 import json
+import html
 import os
 import re
 import tempfile
@@ -11,8 +12,13 @@ import time
 
 import requests
 import streamlit as st
+from bs4 import BeautifulSoup
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches, Pt
 from fpdf import FPDF
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from streamlit_quill import st_quill
 
 
 st.set_page_config(page_title="Travel Planner", layout="wide")
@@ -833,6 +839,75 @@ Rules:
         return fallback_plan(destination, start_date, end_date)
 
 
+def revise_plan_with_prompt(days: list[dict], instruction: str, destination: str) -> list[dict]:
+    instruction = (instruction or "").strip()
+    if not instruction:
+        return days
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        updated = [dict(day) for day in days]
+        change_match = re.search(r"(?:change|replace)\s+(.+?)\s+(?:with|to)\s+(.+)", instruction, re.IGNORECASE)
+        remove_match = re.search(r"remove\s+(.+)", instruction, re.IGNORECASE)
+        fields = ("title", "morning", "afternoon", "evening")
+        for day in updated:
+            if change_match:
+                old_text, new_text = change_match.group(1).strip(), change_match.group(2).strip()
+                for field in fields:
+                    day[field] = re.sub(re.escape(old_text), new_text, str(day.get(field, "")), flags=re.IGNORECASE)
+                day["places"] = [re.sub(re.escape(old_text), new_text, place, flags=re.IGNORECASE) for place in day.get("places", [])]
+            elif remove_match:
+                target = remove_match.group(1).strip()
+                for field in fields:
+                    day[field] = re.sub(re.escape(target), "", str(day.get(field, "")), flags=re.IGNORECASE).strip()
+                day["places"] = [place for place in day.get("places", []) if target.lower() not in place.lower()]
+        if not change_match and not remove_match:
+            for day in updated[1:-1] if len(updated) > 2 else updated:
+                day["evening"] = safe_text(f"{day.get('evening', '')} {instruction}")
+        return updated
+
+    prompt = f"""
+Revise this travel plan according to the user's instruction.
+Return JSON only as {{"days": [...]}} and preserve the same number of days and each date.
+Keep every day object fields: title, morning, afternoon, evening, places.
+First day remains arrival/rest only and last day remains departure only.
+Destination: {destination}
+User instruction: {instruction}
+Current plan: {json.dumps(days, default=str)}
+"""
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "anthropic/claude-3-haiku",
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=90,
+        )
+        response.raise_for_status()
+        raw_text = response.json()["choices"][0]["message"]["content"]
+        payload = json.loads(extract_json_block(raw_text))
+        revised = payload.get("days", [])
+        if len(revised) != len(days):
+            return days
+        normalized = []
+        for index, original in enumerate(days):
+            item = revised[index]
+            normalized.append(
+                {
+                    **original,
+                    "title": clean_day_title(str(item.get("title", original["title"])), index),
+                    "morning": safe_text(str(item.get("morning", original.get("morning", "")))),
+                    "afternoon": safe_text(str(item.get("afternoon", original.get("afternoon", "")))),
+                    "evening": safe_text(str(item.get("evening", original.get("evening", "")))),
+                    "places": normalize_place_list(item.get("places", original.get("places", []))),
+                }
+            )
+        return apply_trip_day_rules(normalized, destination)
+    except Exception:
+        return days
+
+
 def save_pdf_ready_image(content: bytes, max_width: int = 1000, max_height: int = 750) -> str | None:
     try:
         image = Image.open(BytesIO(content))
@@ -1439,6 +1514,71 @@ def build_pdf(client: str, title: str, destination: str, start_date: date, end_d
     return output
 
 
+def build_docx(client: str, title: str, destination: str, start_date: date, end_date: date, days: list[dict], cover_path: str | None, day_images: list[list[dict]]) -> bytes:
+    document = Document()
+    section = document.sections[0]
+    section.top_margin = Inches(0.7)
+    section.bottom_margin = Inches(0.7)
+    section.left_margin = Inches(0.8)
+    section.right_margin = Inches(0.8)
+
+    styles = document.styles
+    styles["Normal"].font.name = "Aptos"
+    styles["Normal"].font.size = Pt(10.5)
+    styles["Title"].font.name = "Aptos Display"
+    styles["Title"].font.size = Pt(24)
+    styles["Title"].font.color.rgb = None
+    for style_name in ("Heading 1", "Heading 2"):
+        styles[style_name].font.name = "Aptos Display"
+        styles[style_name].font.color.rgb = None
+
+    title_paragraph = document.add_paragraph(style="Title")
+    title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_paragraph.add_run(safe_text(title))
+    subtitle = document.add_paragraph()
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    subtitle.add_run(safe_text(client)).bold = True
+    subtitle.add_run(f"\n{safe_text(destination)}")
+    subtitle.add_run(f"\n{compact_date(start_date)} - {compact_date(end_date)}")
+
+    if cover_path and Path(cover_path).exists():
+        cover = document.add_paragraph()
+        cover.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cover.add_run().add_picture(cover_path, width=Inches(6.25))
+
+    document.add_heading("Trip Summary", level=1)
+    for item in days:
+        summary = document.add_paragraph(style="List Bullet")
+        summary.add_run(f"{format_day_label(item['date'])}: ").bold = True
+        summary.add_run(safe_text(item.get("title", "")))
+
+    for index, item in enumerate(days):
+        document.add_heading(f"Day {index + 1}  {format_day_label(item['date'])}", level=1)
+        document.add_heading(safe_text(item.get("title", "")), level=2)
+        for label, field in (("Morning", "morning"), ("Afternoon", "afternoon"), ("Evening", "evening")):
+            paragraph = document.add_paragraph()
+            paragraph.add_run(f"{label}: ").bold = True
+            paragraph.add_run(safe_text(item.get(field, "")))
+        if item.get("places"):
+            paragraph = document.add_paragraph()
+            paragraph.add_run("Places: ").bold = True
+            paragraph.add_run(safe_text(", ".join(item["places"])))
+        entries = day_images[index] if index < len(day_images) else []
+        for entry in entries[:2]:
+            image_path = entry.get("path")
+            if image_path and Path(image_path).exists():
+                image_paragraph = document.add_paragraph()
+                image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                image_paragraph.add_run().add_picture(image_path, width=Inches(5.8))
+                caption = document.add_paragraph(safe_text(entry.get("place", "Travel image")))
+                caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                caption.runs[0].italic = True
+
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def cleanup_temp_images(cover_path: str | None, day_images: list[list[dict]]):
     paths = set()
     if cover_path:
@@ -1467,7 +1607,7 @@ def save_uploaded_image(uploaded_file) -> str | None:
         return None
 
 
-def rebuild_result_pdf(result: dict) -> None:
+def rebuild_result_documents(result: dict) -> None:
     result["pdf_bytes"] = build_pdf(
         client=result["client_name"],
         title=result["plan_title"],
@@ -1478,6 +1618,56 @@ def rebuild_result_pdf(result: dict) -> None:
         cover_path=result["cover_path"],
         day_images=result["day_images"],
     )
+    result["docx_bytes"] = build_docx(
+        client=result["client_name"],
+        title=result["plan_title"],
+        destination=result["destination"],
+        start_date=result["start_date"],
+        end_date=result["end_date"],
+        days=result["days"],
+        cover_path=result["cover_path"],
+        day_images=result["day_images"],
+    )
+
+
+def day_to_editor_html(day: dict) -> str:
+    def escaped(value: str) -> str:
+        return html.escape(str(value or ""))
+
+    places = ", ".join(day.get("places", []))
+    return (
+        f"<h2>{escaped(day.get('title', ''))}</h2>"
+        f"<p><strong>Morning</strong></p><p>{escaped(day.get('morning', ''))}</p>"
+        f"<p><strong>Afternoon</strong></p><p>{escaped(day.get('afternoon', ''))}</p>"
+        f"<p><strong>Evening</strong></p><p>{escaped(day.get('evening', ''))}</p>"
+        f"<p><strong>Places</strong></p><p>{escaped(places)}</p>"
+    )
+
+
+def editor_html_to_day(editor_html: str, original: dict) -> dict:
+    soup = BeautifulSoup(editor_html or "", "html.parser")
+    updated = dict(original)
+    heading = soup.find(["h1", "h2", "h3"])
+    if heading and heading.get_text(" ", strip=True):
+        updated["title"] = heading.get_text(" ", strip=True)
+
+    values = {}
+    for strong in soup.find_all("strong"):
+        label = strong.get_text(" ", strip=True).lower()
+        if label not in {"morning", "afternoon", "evening", "places"}:
+            continue
+        label_block = strong.find_parent(["p", "div"])
+        value_block = label_block.find_next_sibling(["p", "div"]) if label_block else None
+        if value_block:
+            values[label] = value_block.get_text(" ", strip=True)
+
+    for field in ("morning", "afternoon", "evening"):
+        if values.get(field):
+            updated[field] = values[field]
+    if "places" in values:
+        updated["places"] = [item.strip() for item in values["places"].split(",") if item.strip()][:4]
+    updated["editor_html"] = editor_html
+    return updated
 
 
 st.markdown(
@@ -1655,6 +1845,16 @@ if generate:
         cover_path=cover_path,
         day_images=day_images,
     )
+    docx_bytes = build_docx(
+        client=client_name,
+        title=plan_title,
+        destination=destination,
+        start_date=start_date,
+        end_date=end_date,
+        days=itinerary_days,
+        cover_path=cover_path,
+        day_images=day_images,
+    )
     progress.progress(100)
     progress.empty()
     st.session_state["trip_result"] = {
@@ -1667,23 +1867,55 @@ if generate:
         "cover_path": cover_path,
         "day_images": day_images,
         "pdf_bytes": pdf_bytes,
+        "docx_bytes": docx_bytes,
+        "rating": None,
     }
 
 result = st.session_state.get("trip_result")
 
 if result:
+    with st.form("prompt_change_form"):
+        change_prompt = st.text_area(
+            "Change this travel plan",
+            placeholder="Example: Replace Central Park with Brooklyn Bridge, or make Day 3 more relaxed.",
+            height=80,
+        )
+        apply_prompt = st.form_submit_button("Apply Prompt Changes")
+    if apply_prompt:
+        if change_prompt.strip():
+            revised_days = revise_plan_with_prompt(result["days"], change_prompt, result["destination"])
+            result["days"] = revised_days
+            for day in result["days"]:
+                day.pop("editor_html", None)
+            rebuild_result_documents(result)
+            st.session_state["trip_result"] = result
+            st.success("Prompt changes applied to the travel plan.")
+            st.rerun()
+        else:
+            st.warning("Please enter the change you want.")
+
     download_tab, preview_tab = st.tabs(["Download", "Document Preview"])
 
     with download_tab:
-        st.download_button(
-            label="Download Professional PDF",
-            data=result["pdf_bytes"],
-            file_name=f"{slugify(result['destination'])}_travel_plan.pdf",
-            mime="application/pdf",
-        )
+        pdf_col, word_col = st.columns(2)
+        with pdf_col:
+            st.download_button(
+                label="Download PDF",
+                data=result["pdf_bytes"],
+                file_name=f"{slugify(result['destination'])}_travel_plan.pdf",
+                mime="application/pdf",
+            )
+        with word_col:
+            st.download_button(
+                label="Download Word",
+                data=result["docx_bytes"],
+                file_name=f"{slugify(result['destination'])}_travel_plan.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
 
     with preview_tab:
         st.markdown("<div class='preview-heading'>Travel Plan</div>", unsafe_allow_html=True)
+        st.caption("Click directly inside the document text to edit it.")
         with st.form("editable_travel_plan"):
             meta_left, meta_right = st.columns(2)
             with meta_left:
@@ -1716,35 +1948,11 @@ if result:
                         f"<div class='document-date'>Day {idx + 1} · {format_day_label(day['date'])}</div>",
                         unsafe_allow_html=True,
                     )
-                    day_title = st.text_input(
-                        "Day title",
-                        day["title"],
-                        key=f"day_title_{idx}",
-                        label_visibility="collapsed",
-                    )
-                    morning = st.text_area(
-                        "Morning",
-                        day.get("morning", ""),
-                        key=f"morning_{idx}",
-                        height=88,
-                    )
-                    afternoon = st.text_area(
-                        "Afternoon",
-                        day.get("afternoon", ""),
-                        key=f"afternoon_{idx}",
-                        height=88,
-                    )
-                    evening = st.text_area(
-                        "Evening",
-                        day.get("evening", ""),
-                        key=f"evening_{idx}",
-                        height=88,
-                    )
-                    places_text = st.text_input(
-                        "Places",
-                        ", ".join(day.get("places", [])),
-                        key=f"places_{idx}",
-                        placeholder="Add places separated by commas",
+                    editor_value = st_quill(
+                        value=day.get("editor_html") or day_to_editor_html(day),
+                        html=True,
+                        toolbar=[["bold", "italic", "underline"], [{"list": "ordered"}, {"list": "bullet"}], ["clean"]],
+                        key=f"day_editor_{idx}",
                     )
                     current_images = result["day_images"][idx] if idx < len(result["day_images"]) else []
                     visible_images = [entry for entry in current_images if entry.get("path")]
@@ -1761,16 +1969,7 @@ if result:
                             key=f"day_images_{idx}",
                             label_visibility="collapsed",
                         )
-                edited_days.append(
-                    {
-                        **day,
-                        "title": day_title,
-                        "morning": morning,
-                        "afternoon": afternoon,
-                        "evening": evening,
-                        "places": [item.strip() for item in places_text.split(",") if item.strip()][:4],
-                    }
-                )
+                edited_days.append(editor_html_to_day(editor_value, day))
                 image_uploads.append(uploads)
 
             apply_edits = st.form_submit_button("Save Changes")
@@ -1795,7 +1994,15 @@ if result:
                         replacements.append({"place": label, "path": image_path})
                 if replacements:
                     result["day_images"][idx] = replacements
-            rebuild_result_pdf(result)
+            rebuild_result_documents(result)
             st.session_state["trip_result"] = result
             st.success("Travel plan updated.")
             st.rerun()
+
+    st.markdown("---")
+    st.caption("Rate this travel plan")
+    rating = st.feedback("stars", key="travel_plan_rating")
+    if rating is not None:
+        result["rating"] = rating + 1
+        st.session_state["trip_result"] = result
+        st.caption(f"Thank you — {rating + 1}/5")
