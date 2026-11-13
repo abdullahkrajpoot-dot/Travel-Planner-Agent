@@ -1684,7 +1684,8 @@ st.markdown(
     }
     [data-testid="stSidebar"] * { color: #103e64 !important; }
     .main-header {
-        color: white !important; font-size: 2.15rem !important; padding: 1.6rem 2rem;
+        color: white !important; font-size: 2.15rem !important; padding: 2.15rem 2.5rem;
+        min-height: 150px; display: flex; align-items: center;
         border-radius: 0 0 22px 22px; margin: -1rem 0 1.4rem 0 !important;
         background: linear-gradient(110deg, #1768aa, #178cc0 64%, #2bb0b3);
         box-shadow: 0 14px 28px rgba(27, 105, 156, .16);
@@ -1696,6 +1697,28 @@ st.markdown(
     }
     div[data-baseweb="input"], div[data-baseweb="base-input"] {
         background: white !important; border-radius: 10px !important;
+    }
+    [data-testid="stSidebar"] .stTextInput > div > div > input,
+    [data-testid="stSidebar"] .stTextInput input {
+        background: #ffffff !important;
+        color: #123f63 !important;
+        -webkit-text-fill-color: #123f63 !important;
+        border: 1px solid #9fc8e2 !important;
+        box-shadow: none !important;
+    }
+    [data-testid="stSidebar"] .stTextInput > div > div > input::placeholder,
+    [data-testid="stSidebar"] .stTextInput input::placeholder {
+        color: #6d8ba1 !important;
+        -webkit-text-fill-color: #6d8ba1 !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stSidebar"] div[data-baseweb="input"],
+    [data-testid="stSidebar"] div[data-baseweb="base-input"] {
+        background: #ffffff !important;
+        border-color: #9fc8e2 !important;
+    }
+    [data-testid="stSidebar"] .stButton > button {
+        color: #ffffff !important;
     }
     [data-testid="stDateInput"] div[data-baseweb="input"],
     [data-testid="stDateInput"] div[data-baseweb="base-input"],
