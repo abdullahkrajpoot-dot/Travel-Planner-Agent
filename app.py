@@ -846,6 +846,33 @@ def revise_plan_with_prompt(days: list[dict], instruction: str, destination: str
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         updated = [dict(day) for day in days]
+        ordinal_map = {
+            "first": 0, "1st": 0, "pehla": 0, "pehli": 0,
+            "second": 1, "2nd": 1, "dusra": 1, "doosra": 1,
+            "third": 2, "3rd": 2, "teesra": 2,
+            "fourth": 3, "4th": 3, "chautha": 3,
+            "fifth": 4, "5th": 4, "panchwa": 4,
+        }
+        target_index = 0
+        day_match = re.search(r"day\s*(\d+)", instruction, re.IGNORECASE)
+        if day_match:
+            target_index = max(int(day_match.group(1)) - 1, 0)
+        else:
+            lowered = instruction.lower()
+            for word, index in ordinal_map.items():
+                if re.search(rf"\b{re.escape(word)}\b", lowered):
+                    target_index = index
+                    break
+        target_index = min(target_index, len(updated) - 1)
+        value_match = re.search(r"(?:to|with)\s+(.+?)\s*$", instruction, re.IGNORECASE)
+        requested_value = safe_text(value_match.group(1)) if value_match else ""
+        if requested_value and re.search(r"\b(?:heading|title)\b", instruction, re.IGNORECASE):
+            updated[target_index]["title"] = requested_value
+            return updated
+        for field in ("morning", "afternoon", "evening"):
+            if requested_value and re.search(rf"\b{field}\b", instruction, re.IGNORECASE):
+                updated[target_index][field] = requested_value
+                return updated
         change_match = re.search(r"(?:change|replace)\s+(.+?)\s+(?:with|to)\s+(.+)", instruction, re.IGNORECASE)
         remove_match = re.search(r"remove\s+(.+)", instruction, re.IGNORECASE)
         fields = ("title", "morning", "afternoon", "evening")
@@ -903,9 +930,65 @@ Current plan: {json.dumps(days, default=str)}
                     "places": normalize_place_list(item.get("places", original.get("places", []))),
                 }
             )
-        return apply_trip_day_rules(normalized, destination)
+        return normalized
     except Exception:
         return days
+
+
+def apply_prompt_image_changes(result: dict, instruction: str) -> bool:
+    lowered = (instruction or "").lower()
+    if not re.search(r"\b(?:image|images|picture|pictures|photo|photos|pic|pics)\b", lowered):
+        return False
+
+    destination = result["destination"]
+    replacement_match = re.search(r"(?:to|with)\s+(.+?)\s*$", instruction, re.IGNORECASE)
+    replacement_query = safe_text(replacement_match.group(1)) if replacement_match else ""
+    replacement_query = re.sub(r"\b(?:image|picture|photo|pic)\b", "", replacement_query, flags=re.IGNORECASE).strip(" -")
+
+    if "cover" in lowered:
+        query = replacement_query or destination
+        new_path = build_place_image(query, destination)
+        if new_path:
+            result["cover_path"] = new_path
+            return True
+
+    day_match = re.search(r"day\s*(\d+)", lowered)
+    if day_match:
+        day_index = min(max(int(day_match.group(1)) - 1, 0), len(result["day_images"]) - 1)
+        entries = result["day_images"][day_index]
+        query = replacement_query or (result["days"][day_index].get("places") or [destination])[0]
+        new_path = build_place_image(query, destination)
+        if new_path:
+            replacement = {"place": query, "path": new_path}
+            if entries:
+                entries[0] = replacement
+            else:
+                result["day_images"][day_index] = [replacement]
+            return True
+
+    ordinal_map = {"first": 0, "1st": 0, "second": 1, "2nd": 1, "third": 2, "3rd": 2, "fourth": 3, "4th": 3}
+    requested_position = None
+    for word, position in ordinal_map.items():
+        if re.search(rf"\b{re.escape(word)}\b", lowered):
+            requested_position = position
+            break
+    if requested_position is not None:
+        flattened = []
+        for day_index, entries in enumerate(result["day_images"]):
+            for image_index, entry in enumerate(entries):
+                flattened.append((day_index, image_index, entry))
+        if flattened:
+            day_index, image_index, old_entry = flattened[min(requested_position, len(flattened) - 1)]
+            query = replacement_query or old_entry.get("place") or destination
+            new_path = build_place_image(query, destination)
+            if new_path:
+                result["day_images"][day_index][image_index] = {"place": query, "path": new_path}
+                return True
+
+    new_cover, new_day_images = build_image_bundle(result["days"], destination)
+    result["cover_path"] = new_cover
+    result["day_images"] = new_day_images
+    return True
 
 
 def save_pdf_ready_image(content: bytes, max_width: int = 1000, max_height: int = 750) -> str | None:
@@ -1897,22 +1980,32 @@ if generate:
 result = st.session_state.get("trip_result")
 
 if result:
+    st.markdown("### AI Change Assistant")
+    st.caption("Tell the assistant what to change in the text or images. PDF and Word files update automatically.")
     with st.form("prompt_change_form"):
         change_prompt = st.text_area(
-            "Change this travel plan",
-            placeholder="Example: Replace Central Park with Brooklyn Bridge, or make Day 3 more relaxed.",
-            height=80,
+            "What would you like to change?",
+            placeholder=(
+                "Examples: First paragraph heading change to Welcome to New York | "
+                "Day 2 morning change to a relaxed city tour | "
+                "First picture replace with Eiffel Tower | Cover image change to Manhattan skyline"
+            ),
+            height=95,
         )
-        apply_prompt = st.form_submit_button("Apply Prompt Changes")
+        apply_prompt = st.form_submit_button("Apply AI Changes")
     if apply_prompt:
         if change_prompt.strip():
             revised_days = revise_plan_with_prompt(result["days"], change_prompt, result["destination"])
             result["days"] = revised_days
+            image_changed = apply_prompt_image_changes(result, change_prompt)
             for day in result["days"]:
                 day.pop("editor_html", None)
             rebuild_result_documents(result)
             st.session_state["trip_result"] = result
-            st.success("Prompt changes applied to the travel plan.")
+            if image_changed:
+                st.success("AI changes applied to the travel plan and images.")
+            else:
+                st.success("AI changes applied to the travel plan.")
             st.rerun()
         else:
             st.warning("Please enter the change you want.")
