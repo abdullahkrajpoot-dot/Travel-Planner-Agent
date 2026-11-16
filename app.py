@@ -1871,14 +1871,43 @@ st.markdown(
     [data-testid="stTabs"] [aria-selected="true"] {
         color: #0c7da7 !important;
     }
-    .stButton > button, .stDownloadButton > button {
+    .stButton > button, .stDownloadButton > button,
+    [data-testid="stFormSubmitButton"] > button,
+    .stFormSubmitButton > button {
         background: linear-gradient(90deg, #1976cf, #1598bd) !important;
         color: white !important; min-height: 46px; border-radius: 12px !important;
+        border: none !important;
         box-shadow: 0 8px 18px rgba(25, 118, 207, .16);
     }
     [data-testid="stExpander"] {
         background: rgba(255,255,255,.9); border: 1px solid #b9d8ed !important;
         border-radius: 14px !important; overflow: hidden;
+    }
+    [data-testid="stExpander"] details,
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+        background: #ffffff !important;
+        color: #145e8c !important;
+    }
+    [data-testid="stExpander"] summary:hover {
+        background: #eef8fd !important;
+    }
+    [data-testid="stExpander"] svg {
+        color: #1688b0 !important;
+        fill: #1688b0 !important;
+    }
+    [data-testid="stFileUploaderDropzone"] {
+        background: #f1f8fc !important;
+        border: 1px dashed #82bddc !important;
+        color: #174f73 !important;
+    }
+    [data-testid="stFileUploaderDropzone"] * {
+        color: #174f73 !important;
+    }
+    [data-testid="stFileUploaderDropzone"] button {
+        background: #ffffff !important;
+        border: 1px solid #58a9d1 !important;
+        color: #176895 !important;
     }
     .preview-heading { color: #145e8c; font-size: 1.45rem; font-weight: 800; margin: .8rem 0; }
     .preview-card {
@@ -2005,19 +2034,14 @@ if generate:
 result = st.session_state.get("trip_result")
 
 if result:
-    st.markdown("### AI Change Assistant")
-    st.caption("Tell the assistant what to change in the text or images. PDF and Word files update automatically.")
-    with st.form("prompt_change_form"):
-        change_prompt = st.text_area(
-            "What would you like to change?",
-            placeholder=(
-                "Examples: First paragraph heading change to Welcome to New York | "
-                "Day 2 morning change to a relaxed city tour | "
-                "First picture replace with Eiffel Tower | Cover image change to Manhattan skyline"
-            ),
-            height=95,
-        )
-        apply_prompt = st.form_submit_button("Apply AI Changes")
+    with st.expander("AI Change Assistant", expanded=False):
+        with st.form("prompt_change_form"):
+            change_prompt = st.text_area(
+                "What would you like to change?",
+                placeholder="",
+                height=95,
+            )
+            apply_prompt = st.form_submit_button("Apply AI Changes")
     if apply_prompt:
         if change_prompt.strip():
             revised_days = revise_plan_with_prompt(result["days"], change_prompt, result["destination"])
