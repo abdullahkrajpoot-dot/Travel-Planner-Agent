@@ -1800,6 +1800,22 @@ st.markdown(
         background: #ffffff !important;
         border-color: #9fc8e2 !important;
     }
+    [data-testid="stSidebar"] [data-testid="stTextInput"] div[data-baseweb="input"],
+    [data-testid="stSidebar"] [data-testid="stTextInput"] div[data-baseweb="input"] > div,
+    [data-testid="stSidebar"] [data-testid="stTextInput"] div[data-baseweb="base-input"],
+    [data-testid="stSidebar"] [data-testid="stTextInput"] div:has(> input:focus),
+    [data-testid="stSidebar"] [data-testid="stTextInput"] input:focus,
+    [data-testid="stSidebar"] [data-testid="InputInstructions"] {
+        background: #ffffff !important;
+        background-color: #ffffff !important;
+        color: #176895 !important;
+        -webkit-text-fill-color: #176895 !important;
+    }
+    [data-testid="stSidebar"] [data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
+        background: #ffffff !important;
+        border-color: #268fbd !important;
+        box-shadow: 0 0 0 1px #268fbd !important;
+    }
     [data-testid="stSidebar"] .stButton > button {
         color: #ffffff !important;
     }
