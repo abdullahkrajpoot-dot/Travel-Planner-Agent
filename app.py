@@ -2094,8 +2094,13 @@ if result:
                     disabled=True,
                 )
 
+            remove_cover = False
             if result.get("cover_path"):
-                st.image(result["cover_path"], width=520)
+                cover_image_col, cover_remove_col = st.columns([8, 2])
+                with cover_image_col:
+                    st.image(result["cover_path"], width=520)
+                with cover_remove_col:
+                    remove_cover = st.form_submit_button("✕ Remove cover")
 
             with st.expander("Change cover image (optional)"):
                 cover_upload = st.file_uploader(
@@ -2107,6 +2112,7 @@ if result:
 
             edited_days = []
             image_uploads = []
+            image_removal_requests = []
             for idx, day in enumerate(result["days"]):
                 with st.container(border=True, key=f"document_page_{idx}"):
                     st.markdown(
@@ -2120,12 +2126,15 @@ if result:
                         key=f"day_editor_{idx}",
                     )
                     current_images = result["day_images"][idx] if idx < len(result["day_images"]) else []
-                    visible_images = [entry for entry in current_images if entry.get("path")]
+                    visible_images = [(original_index, entry) for original_index, entry in enumerate(current_images) if entry.get("path")]
                     if visible_images:
                         image_columns = st.columns(min(len(visible_images), 2))
-                        for image_idx, entry in enumerate(visible_images):
+                        for image_idx, (original_index, entry) in enumerate(visible_images):
                             with image_columns[image_idx % len(image_columns)]:
                                 st.image(entry["path"], caption=entry.get("place", "Travel image"), use_container_width=True)
+                                remove_clicked = st.form_submit_button(f"✕ Remove D{idx + 1}-{image_idx + 1}")
+                                if remove_clicked:
+                                    image_removal_requests.append((idx, original_index))
                     with st.expander("Replace images"):
                         uploads = st.file_uploader(
                             "Upload replacement images",
@@ -2139,7 +2148,17 @@ if result:
 
             apply_edits = st.form_submit_button("Save Changes")
 
-        if apply_edits:
+        if remove_cover or image_removal_requests:
+            if remove_cover:
+                result["cover_path"] = None
+            for day_index, image_index in sorted(image_removal_requests, reverse=True):
+                if day_index < len(result["day_images"]) and image_index < len(result["day_images"][day_index]):
+                    result["day_images"][day_index].pop(image_index)
+            rebuild_result_documents(result)
+            st.session_state["trip_result"] = result
+            st.success("Image removed from the travel plan.")
+            st.rerun()
+        elif apply_edits:
             result["client_name"] = edited_client.strip() or result["client_name"]
             result["plan_title"] = edited_title.strip() or result["plan_title"]
             result["destination"] = edited_destination.strip() or result["destination"]
