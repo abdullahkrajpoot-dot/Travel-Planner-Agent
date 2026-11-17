@@ -1761,6 +1761,9 @@ st.markdown(
         background: linear-gradient(135deg, #edf7ff 0%, #f8fbff 52%, #edf9fb 100%) !important;
         color: #12365a !important;
     }
+    [data-testid="stMainBlockContainer"] {
+        padding-top: 2.5rem !important;
+    }
     [data-testid="stSidebar"] {
         background: #f7fbff !important;
         border-right: 1px solid #b8d8ed !important;
