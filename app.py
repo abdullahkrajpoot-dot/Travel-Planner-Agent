@@ -31,7 +31,7 @@ st.markdown(
     .stApp { color-scheme: dark !important; }
     #MainMenu { display: none !important; }
     footer { display: none !important; }
-    header { visibility: hidden !important; height: 0 !important; }
+    header[data-testid="stHeader"] { visibility: hidden !important; height: 0 !important; }
     [data-testid="stHeader"] { display: none !important; }
     [data-testid="stToolbar"] { display: none !important; }
     [data-testid="stDecoration"] { display: none !important; }
@@ -1764,6 +1764,9 @@ st.markdown(
     [data-testid="stMainBlockContainer"] {
         padding-top: 2.5rem !important;
     }
+    [data-testid="stDateInputQuickSelect"] {
+        display: none !important;
+    }
     [data-testid="stSidebar"] {
         background: #f7fbff !important;
         border-right: 1px solid #b8d8ed !important;
@@ -1974,6 +1977,7 @@ with st.sidebar:
     travel_dates = st.date_input(
         "Travel Dates",
         value=(datetime.now().date(), datetime.now().date() + timedelta(days=5)),
+        min_value=datetime.now().date(),
         help="Select the departure date first, then the return date.",
     )
     if isinstance(travel_dates, (tuple, list)) and len(travel_dates) == 2:
