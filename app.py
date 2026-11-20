@@ -129,6 +129,17 @@ def safe_text(value: str) -> str:
     return normalized.encode("latin-1", "ignore").decode("latin-1").strip()
 
 
+def get_openrouter_api_key() -> str:
+    """Read the AI key from either the process environment or Streamlit secrets."""
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if api_key:
+        return api_key
+    try:
+        return str(st.secrets.get("OPENROUTER_API_KEY", "")).strip()
+    except Exception:
+        return ""
+
+
 def html_text(value: str) -> str:
     return safe_text(value).replace("\n", "<br>")
 
@@ -785,7 +796,7 @@ def parse_ai_plan(raw_text: str, destination: str, start_date: date, end_date: d
 
 
 def get_ai_plan(client: str, destination: str, start_date: date, end_date: date):
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    api_key = get_openrouter_api_key()
     if not api_key:
         return fallback_plan(destination, start_date, end_date)
 
@@ -826,8 +837,12 @@ Rules:
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": "anthropic/claude-3-haiku",
-                "messages": [{"role": "user", "content": prompt}],
+                "model": os.getenv("OPENROUTER_MODEL", "openrouter/auto"),
+                "messages": [
+                    {"role": "system", "content": "You are a precise travel-plan editor. Follow every user requirement and return valid JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.15,
             },
             timeout=90,
         )
@@ -843,7 +858,7 @@ def revise_plan_with_prompt(days: list[dict], instruction: str, destination: str
     instruction = (instruction or "").strip()
     if not instruction:
         return days
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    api_key = get_openrouter_api_key()
     if not api_key:
         updated = [dict(day) for day in days]
         ordinal_map = {
@@ -888,15 +903,27 @@ def revise_plan_with_prompt(days: list[dict], instruction: str, destination: str
                     day[field] = re.sub(re.escape(target), "", str(day.get(field, "")), flags=re.IGNORECASE).strip()
                 day["places"] = [place for place in day.get("places", []) if target.lower() not in place.lower()]
         if not change_match and not remove_match:
-            for day in updated[1:-1] if len(updated) > 2 else updated:
-                day["evening"] = safe_text(f"{day.get('evening', '')} {instruction}")
+            editable = updated[1:-1] if len(updated) > 2 else updated
+            if editable:
+                theme = safe_text(instruction)
+                if re.search(r"new\s*year|naya\s+saal", instruction, re.IGNORECASE):
+                    theme = "New Year Celebration"
+                target = editable[0]
+                target["title"] = theme[:80]
+                target["morning"] = safe_text(f"Begin the day with destination highlights connected to {theme}.")
+                target["afternoon"] = safe_text(f"Continue with sightseeing and local experiences planned around {theme}.")
+                target["evening"] = safe_text(f"Enjoy an evening experience that meaningfully reflects {theme}.")
         return updated
 
     prompt = f"""
-Revise this travel plan according to the user's instruction.
+Revise this travel plan according to the user's instruction. The instruction is an order, not a suggestion.
 Return JSON only as {{"days": [...]}} and preserve the same number of days and each date.
 Keep every day object fields: title, morning, afternoon, evening, places.
-First day remains arrival/rest only and last day remains departure only.
+Implement every requested text/content change exactly and do not silently ignore any part.
+If the user asks to add a theme or occasion (for example New Year), rewrite the relevant title and activities so the plan genuinely includes it; do not merely append the instruction as raw text.
+If the user says "add/create a travel plan", integrate that requested plan or theme into the existing dated itinerary without changing the number of days.
+When activities change, update "places" with real, specific locations mentioned or required by those activities.
+Only keep first-day arrival and last-day departure constraints when they do not conflict with the explicit instruction.
 Destination: {destination}
 User instruction: {instruction}
 Current plan: {json.dumps(days, default=str)}
@@ -906,8 +933,12 @@ Current plan: {json.dumps(days, default=str)}
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
-                "model": "anthropic/claude-3-haiku",
-                "messages": [{"role": "user", "content": prompt}],
+                "model": os.getenv("OPENROUTER_MODEL", "openrouter/auto"),
+                "messages": [
+                    {"role": "system", "content": "You are a precise document editor. Execute every requested change and return valid JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.1,
             },
             timeout=90,
         )
@@ -916,7 +947,7 @@ Current plan: {json.dumps(days, default=str)}
         payload = json.loads(extract_json_block(raw_text))
         revised = payload.get("days", [])
         if len(revised) != len(days):
-            return days
+            raise ValueError("AI response changed the itinerary length")
         normalized = []
         for index, original in enumerate(days):
             item = revised[index]
@@ -930,26 +961,46 @@ Current plan: {json.dumps(days, default=str)}
                     "places": normalize_place_list(item.get("places", original.get("places", []))),
                 }
             )
+        original_signature = [
+            (day.get("title"), day.get("morning"), day.get("afternoon"), day.get("evening"), day.get("places", []))
+            for day in days
+        ]
+        revised_signature = [
+            (day.get("title"), day.get("morning"), day.get("afternoon"), day.get("evening"), day.get("places", []))
+            for day in normalized
+        ]
+        if revised_signature == original_signature:
+            raise ValueError("AI returned the plan without applying the instruction")
         return normalized
     except Exception:
-        return days
+        updated = [{**day, "places": list(day.get("places", []))} for day in days]
+        editable = updated[1:-1] if len(updated) > 2 else updated
+        if editable:
+            theme = "New Year Celebration" if re.search(r"new\s*year|naya\s+saal", instruction, re.IGNORECASE) else safe_text(instruction)
+            target = editable[0]
+            target["title"] = theme[:80]
+            target["morning"] = safe_text(f"Begin the day with destination highlights connected to {theme}.")
+            target["afternoon"] = safe_text(f"Continue with sightseeing and local experiences planned around {theme}.")
+            target["evening"] = safe_text(f"Enjoy an evening experience that meaningfully reflects {theme}.")
+        return updated
 
 
 def apply_prompt_image_changes(result: dict, instruction: str) -> bool:
     lowered = (instruction or "").lower()
-    if not re.search(r"\b(?:image|images|picture|pictures|photo|photos|pic|pics)\b", lowered):
+    image_words = r"(?:image|images|picture|pictures|photo|photos|pic|pics|tasveer|tasvir|tasweer)"
+    if not re.search(rf"\b{image_words}\b", lowered):
         return False
 
     destination = result["destination"]
     replacement_match = re.search(r"(?:to|with)\s+(.+?)\s*$", instruction, re.IGNORECASE)
     replacement_query = safe_text(replacement_match.group(1)) if replacement_match else ""
-    replacement_query = re.sub(r"\b(?:image|picture|photo|pic)\b", "", replacement_query, flags=re.IGNORECASE).strip(" -")
+    replacement_query = re.sub(rf"\b{image_words}\b", "", replacement_query, flags=re.IGNORECASE).strip(" -")
 
     if "cover" in lowered:
         query = replacement_query or destination
-        new_path = build_place_image(query, destination)
-        if new_path:
-            result["cover_path"] = new_path
+        new_entry = build_place_image(query, destination)
+        if new_entry and new_entry.get("path"):
+            result["cover_path"] = new_entry["path"]
             return True
 
     day_match = re.search(r"day\s*(\d+)", lowered)
@@ -957,9 +1008,8 @@ def apply_prompt_image_changes(result: dict, instruction: str) -> bool:
         day_index = min(max(int(day_match.group(1)) - 1, 0), len(result["day_images"]) - 1)
         entries = result["day_images"][day_index]
         query = replacement_query or (result["days"][day_index].get("places") or [destination])[0]
-        new_path = build_place_image(query, destination)
-        if new_path:
-            replacement = {"place": query, "path": new_path}
+        replacement = build_place_image(query, destination)
+        if replacement and replacement.get("path"):
             if entries:
                 entries[0] = replacement
             else:
@@ -980,9 +1030,9 @@ def apply_prompt_image_changes(result: dict, instruction: str) -> bool:
         if flattened:
             day_index, image_index, old_entry = flattened[min(requested_position, len(flattened) - 1)]
             query = replacement_query or old_entry.get("place") or destination
-            new_path = build_place_image(query, destination)
-            if new_path:
-                result["day_images"][day_index][image_index] = {"place": query, "path": new_path}
+            replacement = build_place_image(query, destination)
+            if replacement and replacement.get("path"):
+                result["day_images"][day_index][image_index] = replacement
                 return True
 
     new_cover, new_day_images = build_image_bundle(result["days"], destination)
@@ -1086,16 +1136,38 @@ def download_image(url: str, suffix: str = ".jpg"):
 
 
 def _candidate_place_queries(place_name: str, destination: str | None) -> list[str]:
-    candidates = [safe_text(place_name)]
-    if "," in place_name:
-        candidates.append(safe_text(place_name.split(",", 1)[0]))
+    candidates = []
     if destination and destination.lower() not in place_name.lower():
         candidates.append(safe_text(f"{place_name}, {destination}"))
+    candidates.append(safe_text(place_name))
+    if "," in place_name:
+        candidates.append(safe_text(place_name.split(",", 1)[0]))
     unique = []
     for item in candidates:
         if item and item not in unique:
             unique.append(item)
     return unique
+
+
+def _relevance_tokens(value: str) -> set[str]:
+    ignored = {
+        "the", "and", "for", "with", "from", "city", "travel", "tourist",
+        "tourism", "photo", "image", "view", "landmark", "attraction",
+    }
+    return {
+        token for token in slugify(safe_text(value)).split("_")
+        if len(token) > 2 and token not in ignored
+    }
+
+
+def _is_relevant_image_result(query: str, label: str) -> bool:
+    query_tokens = _relevance_tokens(query)
+    label_tokens = _relevance_tokens(label)
+    if not query_tokens or not label_tokens:
+        return False
+    overlap = len(query_tokens.intersection(label_tokens))
+    required = 1 if len(query_tokens) <= 2 else 2
+    return overlap >= required
 
 
 def _wikipedia_summary_image(query: str) -> str | None:
@@ -1113,6 +1185,12 @@ def _wikipedia_summary_image(query: str) -> str | None:
         if response.status_code != 200:
             return None
         payload = response.json()
+        context = " ".join(
+            str(payload.get(field, ""))
+            for field in ("title", "description", "extract")
+        )
+        if not _is_relevant_image_result(query, context):
+            return None
         image_obj = payload.get("originalimage") or payload.get("thumbnail") or {}
         image_url = image_obj.get("source")
         if image_url and image_url.startswith("http"):
@@ -1134,6 +1212,8 @@ def _wikipedia_page_image(query: str) -> str | None:
         })
         pages = payload.get("query", {}).get("pages", {})
         for page in pages.values():
+            if not _is_relevant_image_result(query, str(page.get("title", ""))):
+                continue
             image_obj = page.get("original") or page.get("thumbnail") or {}
             image_url = image_obj.get("source")
             if image_url and image_url.startswith("http"):
@@ -1164,21 +1244,15 @@ def _wikipedia_search_image(query: str) -> str | None:
         if not results:
             return None
 
-        query_tokens = {
-            token
-            for token in slugify(query).split("_")
-            if len(token) > 2 and token not in {"the", "and", "for"}
-        }
         ranked_titles = []
         for row in results:
             title = safe_text(row.get("title", ""))
-            title_tokens = {token for token in slugify(title).split("_") if len(token) > 2}
-            overlap = len(query_tokens.intersection(title_tokens))
+            overlap = len(_relevance_tokens(query).intersection(_relevance_tokens(title)))
             ranked_titles.append((overlap, title))
         ranked_titles.sort(reverse=True, key=lambda item: item[0])
 
         for overlap, title in ranked_titles:
-            if overlap == 0:
+            if not _is_relevant_image_result(query, title):
                 continue
             image_url = _wikipedia_page_image(title)
             if image_url:
@@ -1209,21 +1283,17 @@ def _commons_search_image(query: str) -> str | None:
         if not results:
             return None
 
-        query_tokens = {
-            token
-            for token in slugify(query).split("_")
-            if len(token) > 2 and token not in {"the", "and", "for", "lahore", "makkah", "madinah"}
-        }
+        query_tokens = _relevance_tokens(query)
         ranked_results = []
         for row in results:
             title = safe_text(row.get("title", ""))
-            title_tokens = {token for token in slugify(title).split("_") if len(token) > 2}
+            title_tokens = _relevance_tokens(title)
             overlap = len(query_tokens.intersection(title_tokens))
             ranked_results.append((overlap, row))
         ranked_results.sort(reverse=True, key=lambda item: item[0])
 
         for overlap, row in ranked_results:
-            if overlap == 0 and query_tokens:
+            if not _is_relevant_image_result(query, safe_text(row.get("title", ""))):
                 continue
             title = row.get("title")
             if not title:
@@ -1370,21 +1440,9 @@ def build_place_image(place_name: str, destination: str | None = None):
         if path:
             return {"place": place_name, "url": searched_url, "path": path}
 
-    for query in queries:
-        for image_url in _web_image_search_urls(query):
-            best_url = best_url or image_url
-            path = download_image(image_url, suffix=".jpg")
-            if path:
-                return {"place": place_name, "url": image_url, "path": path}
-
-    fallback_query = requests.utils.quote(f"{place_name} {destination or ''} landmark travel photo".strip())
     fallback_urls = []
     if best_url:
         fallback_urls.append(best_url)
-    fallback_urls.extend([
-        f"https://source.unsplash.com/1200x800/?{fallback_query}",
-        f"https://loremflickr.com/1200/800/{fallback_query}",
-    ])
 
     for fallback_url in fallback_urls:
         path = download_image(fallback_url, suffix=".jpg")
@@ -2051,9 +2109,16 @@ if result:
             apply_prompt = st.form_submit_button("Apply AI Changes")
     if apply_prompt:
         if change_prompt.strip():
+            previous_places = [list(day.get("places", [])) for day in result["days"]]
             revised_days = revise_plan_with_prompt(result["days"], change_prompt, result["destination"])
             result["days"] = revised_days
             image_changed = apply_prompt_image_changes(result, change_prompt)
+            revised_places = [list(day.get("places", [])) for day in result["days"]]
+            if not image_changed and revised_places != previous_places:
+                new_cover, new_day_images = build_image_bundle(result["days"], result["destination"])
+                result["cover_path"] = new_cover
+                result["day_images"] = new_day_images
+                image_changed = True
             for day in result["days"]:
                 day.pop("editor_html", None)
             rebuild_result_documents(result)
@@ -2066,7 +2131,7 @@ if result:
         else:
             st.warning("Please enter the change you want.")
 
-    download_tab, preview_tab = st.tabs(["Download", "Document Preview"])
+    preview_tab, download_tab = st.tabs(["Document Preview", "Download"])
 
     with download_tab:
         pdf_col, word_col = st.columns(2)
