@@ -2228,7 +2228,7 @@ if generate:
     if not client_name.strip() or not destination.strip():
         st.error("Please enter client name and destination.")
         st.stop()
-    progress = progress_placeholder.progress(0)
+    progress = progress_placeholder.progress(5)
     itinerary_days = get_ai_plan(client_name, destination, start_date, end_date)
     progress.progress(35)
     cover_path, day_images = build_image_bundle(itinerary_days, destination)
