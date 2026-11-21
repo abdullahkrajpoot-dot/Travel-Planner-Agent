@@ -2171,6 +2171,12 @@ st.markdown(
         color: #d71920 !important;
         fill: #d71920 !important;
     }
+    [data-testid="stProgress"] {
+        margin: -.55rem 0 1.25rem 0 !important;
+    }
+    [data-testid="stProgress"] > div > div > div > div {
+        background: linear-gradient(90deg, #b90f17, #ef3038) !important;
+    }
     @media (max-width: 720px) {
         .main-header {
             min-height: 112px !important;
@@ -2187,6 +2193,7 @@ st.markdown(
 
 
 st.markdown("<div class='main-header'>Travel Planner</div>", unsafe_allow_html=True)
+progress_placeholder = st.empty()
 
 with st.sidebar:
     st.markdown("### Trip Details")
@@ -2221,7 +2228,7 @@ if generate:
     if not client_name.strip() or not destination.strip():
         st.error("Please enter client name and destination.")
         st.stop()
-    progress = st.progress(0)
+    progress = progress_placeholder.progress(0)
     itinerary_days = get_ai_plan(client_name, destination, start_date, end_date)
     progress.progress(35)
     cover_path, day_images = build_image_bundle(itinerary_days, destination)
