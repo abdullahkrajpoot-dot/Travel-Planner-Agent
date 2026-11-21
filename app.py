@@ -1,3 +1,4 @@
+import base64
 import json
 import html
 import os
@@ -17,7 +18,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 from fpdf import FPDF
-from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError
 from streamlit_quill import st_quill
 
 
@@ -376,12 +377,7 @@ def _landmarks_for_one_destination(destination: str) -> list[list[str]]:
         return chunk_places(discovered)
 
     normalized_destination = safe_text(destination) or "the destination"
-    return [[
-        f"{normalized_destination} historic center",
-        f"{normalized_destination} main square",
-        f"{normalized_destination} national museum",
-        f"{normalized_destination} scenic viewpoint",
-    ]]
+    return [[normalized_destination, normalized_destination, normalized_destination, normalized_destination]]
 
 
 def get_destination_landmarks(destination: str) -> list[list[str]]:
@@ -420,7 +416,8 @@ def flat_unique_places(groups: list[list[str]]) -> list[str]:
 def get_landmark_groups_for_days(destination: str, total_days: int) -> list[list[str]]:
     groups = get_destination_landmarks(destination)
     places = flat_unique_places(groups)
-    target_places = max(total_days * 4, 4)
+    sightseeing_days = max(total_days - 2, 1)
+    target_places = max(sightseeing_days * 4, 4)
 
     if len(places) < target_places:
         for item in split_destination_names(destination):
@@ -429,41 +426,6 @@ def get_landmark_groups_for_days(destination: str, total_days: int) -> list[list
                     break
                 if place not in places and is_valid_place_name(place):
                     places.append(place)
-
-    if len(places) < target_places:
-        base = safe_text(destination) or "Destination"
-        generic_types = [
-            "Old Town",
-            "Central Market",
-            "Heritage Museum",
-            "Main Mosque",
-            "City Park",
-            "Waterfront",
-            "Scenic Viewpoint",
-            "Cultural Center",
-            "Historic Quarter",
-            "National Museum",
-            "Main Square",
-            "Botanical Garden",
-            "Old Bazaar",
-            "City Museum",
-            "Grand Mosque",
-            "Riverside Promenade",
-            "Art Gallery",
-            "Fortress",
-            "Clock Tower",
-            "Public Garden",
-            "Heritage Street",
-            "Traditional Market",
-            "Archaeological Site",
-            "Panoramic Lookout",
-        ]
-        for place_type in generic_types:
-            if len(places) >= target_places:
-                break
-            place = f"{base} {place_type}"
-            if place not in places:
-                places.append(place)
 
     return chunk_places(places[:target_places])
 
@@ -854,7 +816,12 @@ Rules:
         return fallback_plan(destination, start_date, end_date)
 
 
-def revise_plan_with_prompt(days: list[dict], instruction: str, destination: str) -> list[dict]:
+def revise_plan_with_prompt(
+    days: list[dict],
+    instruction: str,
+    destination: str,
+    reference_image: dict | None = None,
+) -> list[dict]:
     instruction = (instruction or "").strip()
     if not instruction:
         return days
@@ -929,6 +896,15 @@ User instruction: {instruction}
 Current plan: {json.dumps(days, default=str)}
 """
     try:
+        user_content: str | list[dict] = prompt
+        if reference_image and reference_image.get("bytes"):
+            mime_type = reference_image.get("mime_type") or "image/jpeg"
+            encoded = base64.b64encode(reference_image["bytes"]).decode("ascii")
+            user_content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}},
+            ]
+
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -936,7 +912,7 @@ Current plan: {json.dumps(days, default=str)}
                 "model": os.getenv("OPENROUTER_MODEL", "openrouter/auto"),
                 "messages": [
                     {"role": "system", "content": "You are a precise document editor. Execute every requested change and return valid JSON only."},
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": user_content},
                 ],
                 "temperature": 0.1,
             },
@@ -985,7 +961,7 @@ Current plan: {json.dumps(days, default=str)}
         return updated
 
 
-def apply_prompt_image_changes(result: dict, instruction: str) -> bool:
+def apply_prompt_image_changes(result: dict, instruction: str, uploaded_path: str | None = None) -> bool:
     lowered = (instruction or "").lower()
     image_words = r"(?:image|images|picture|pictures|photo|photos|pic|pics|tasveer|tasvir|tasweer)"
     if not re.search(rf"\b{image_words}\b", lowered):
@@ -997,6 +973,9 @@ def apply_prompt_image_changes(result: dict, instruction: str) -> bool:
     replacement_query = re.sub(rf"\b{image_words}\b", "", replacement_query, flags=re.IGNORECASE).strip(" -")
 
     if "cover" in lowered:
+        if uploaded_path:
+            result["cover_path"] = uploaded_path
+            return True
         query = replacement_query or destination
         new_entry = build_place_image(query, destination)
         if new_entry and new_entry.get("path"):
@@ -1008,7 +987,7 @@ def apply_prompt_image_changes(result: dict, instruction: str) -> bool:
         day_index = min(max(int(day_match.group(1)) - 1, 0), len(result["day_images"]) - 1)
         entries = result["day_images"][day_index]
         query = replacement_query or (result["days"][day_index].get("places") or [destination])[0]
-        replacement = build_place_image(query, destination)
+        replacement = {"place": query, "path": uploaded_path} if uploaded_path else build_place_image(query, destination)
         if replacement and replacement.get("path"):
             if entries:
                 entries[0] = replacement
@@ -1030,10 +1009,19 @@ def apply_prompt_image_changes(result: dict, instruction: str) -> bool:
         if flattened:
             day_index, image_index, old_entry = flattened[min(requested_position, len(flattened) - 1)]
             query = replacement_query or old_entry.get("place") or destination
-            replacement = build_place_image(query, destination)
+            replacement = {"place": query, "path": uploaded_path} if uploaded_path else build_place_image(query, destination)
             if replacement and replacement.get("path"):
                 result["day_images"][day_index][image_index] = replacement
                 return True
+
+    if uploaded_path:
+        for day_index, entries in enumerate(result["day_images"]):
+            if entries:
+                old_place = entries[0].get("place") or destination
+                result["day_images"][day_index][0] = {"place": old_place, "path": uploaded_path}
+                return True
+        result["cover_path"] = uploaded_path
+        return True
 
     new_cover, new_day_images = build_image_bundle(result["days"], destination)
     result["cover_path"] = new_cover
@@ -1057,57 +1045,6 @@ def save_pdf_ready_image(content: bytes, max_width: int = 1000, max_height: int 
             return temp_file.name
     except (UnidentifiedImageError, OSError, ValueError):
         return None
-
-
-def create_text_image(place_name: str, destination: str | None = None) -> str | None:
-    try:
-        image = Image.new("RGB", (1000, 667), (235, 239, 244))
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((0, 0, 1000, 667), fill=(235, 239, 244))
-        draw.rectangle((0, 0, 1000, 134), fill=(22, 48, 86))
-        draw.rectangle((58, 183, 942, 583), outline=(150, 163, 184), width=4)
-    except Exception:
-        return None
-
-    try:
-        title_font = ImageFont.truetype("arial.ttf", 58)
-        body_font = ImageFont.truetype("arial.ttf", 38)
-    except Exception:
-        title_font = ImageFont.load_default()
-        body_font = ImageFont.load_default()
-
-    try:
-        safe_place = safe_text(place_name) or "Travel Highlight"
-        safe_destination = safe_text(destination or "")
-        draw.text((58, 43), "Travel Highlight", fill=(255, 255, 255), font=title_font)
-        wrapped_place = wrap_text(safe_place, 34)
-        y = 233
-        for line in wrapped_place:
-            draw.text((92, y), line, fill=(15, 23, 42), font=body_font)
-            y += 54
-        if safe_destination:
-            draw.text((92, 517), safe_destination, fill=(71, 85, 105), font=body_font)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
-            image.save(temp_file.name, format="JPEG", quality=88, optimize=True, progressive=True)
-            return temp_file.name
-    except Exception:
-        return None
-
-
-def wrap_text(value: str, max_chars: int) -> list[str]:
-    words = value.split()
-    lines = []
-    current = ""
-    for word in words:
-        next_line = f"{current} {word}".strip()
-        if len(next_line) > max_chars and current:
-            lines.append(current)
-            current = word
-        else:
-            current = next_line
-    if current:
-        lines.append(current)
-    return lines[:5]
 
 
 def download_image(url: str, suffix: str = ".jpg"):
@@ -1136,10 +1073,9 @@ def download_image(url: str, suffix: str = ".jpg"):
 
 
 def _candidate_place_queries(place_name: str, destination: str | None) -> list[str]:
-    candidates = []
+    candidates = [safe_text(place_name)]
     if destination and destination.lower() not in place_name.lower():
         candidates.append(safe_text(f"{place_name}, {destination}"))
-    candidates.append(safe_text(place_name))
     if "," in place_name:
         candidates.append(safe_text(place_name.split(",", 1)[0]))
     unique = []
@@ -1167,7 +1103,18 @@ def _is_relevant_image_result(query: str, label: str) -> bool:
         return False
     overlap = len(query_tokens.intersection(label_tokens))
     required = 1 if len(query_tokens) <= 2 else 2
-    return overlap >= required
+    if overlap < required:
+        return False
+
+    primary_name = query.split(",", 1)[0]
+    primary_tokens = _relevance_tokens(primary_name)
+    primary_overlap = len(primary_tokens.intersection(label_tokens))
+    primary_required = 1 if len(primary_tokens) <= 1 else 2
+    banned_result_tokens = {
+        "logo", "basketball", "football", "baseball", "hockey", "team", "club",
+        "season", "jersey", "mascot", "album", "film", "television", "game",
+    }
+    return primary_overlap >= primary_required and not banned_result_tokens.intersection(label_tokens)
 
 
 def _wikipedia_summary_image(query: str) -> str | None:
@@ -1449,19 +1396,18 @@ def build_place_image(place_name: str, destination: str | None = None):
         if path:
             return {"place": place_name, "url": fallback_url, "path": path}
 
-    placeholder_path = create_text_image(place_name, destination)
-    return {"place": place_name, "url": fallback_urls[0] if fallback_urls else None, "path": placeholder_path}
+    return {"place": place_name, "url": fallback_urls[0] if fallback_urls else None, "path": None}
 
 
 def build_image_bundle(days: list[dict], destination: str):
     cover_candidates = []
     for day in days[:2]:
-        cover_candidates.extend(day.get("places", []))
+        cover_candidates.extend(day.get("places", [])[:2])
     if not cover_candidates:
         cover_candidates = [destination]
 
     unique_places = []
-    planned_places = [place for day in days for place in day.get("places", [])]
+    planned_places = [place for day in days for place in day.get("places", [])[:2]]
     for place in cover_candidates + planned_places:
         if place not in unique_places:
             unique_places.append(place)
@@ -1489,7 +1435,7 @@ def build_image_bundle(days: list[dict], destination: str):
     day_images: list[list[dict]] = []
     for day in days:
         entries: list[dict] = []
-        for place in day.get("places", []):
+        for place in day.get("places", [])[:2]:
             entry = results.get(place, {"place": place, "url": None, "path": None})
             path = entry.get("path")
             source = path or entry.get("url")
@@ -1498,7 +1444,7 @@ def build_image_bundle(days: list[dict], destination: str):
                 used_sources.add(source)
                 used_places.add(place)
 
-        day_images.append(entries[:4])
+        day_images.append(entries[:2])
 
     return cover_path, day_images
 
@@ -1647,7 +1593,7 @@ def build_pdf(client: str, title: str, destination: str, start_date: date, end_d
     pdf.set_y(12)
     for idx, item in enumerate(days):
         draw_day_block(pdf, item, day_images[idx] if idx < len(day_images) else [])
-    output = pdf.output(dest="S")
+    output = pdf.output()
     if isinstance(output, bytearray):
         return bytes(output)
     if isinstance(output, str):
@@ -2094,166 +2040,185 @@ if generate:
         "pdf_bytes": pdf_bytes,
         "docx_bytes": docx_bytes,
         "rating": None,
+        "ui_version": time.time_ns(),
     }
 
 result = st.session_state.get("trip_result")
 
 if result:
-    with st.expander("AI Change Assistant", expanded=False):
-        with st.form("prompt_change_form"):
-            change_prompt = st.text_area(
-                "What would you like to change?",
-                placeholder="",
-                height=95,
+    ui_version = result.get("ui_version", 0)
+    st.markdown("<div class='preview-heading'>Travel Plan</div>", unsafe_allow_html=True)
+    st.caption("Click directly inside the document text to edit it. Changes save automatically.")
+
+    meta_left, meta_right = st.columns(2)
+    with meta_left:
+        edited_client = st.text_input("Client Name", result["client_name"], key=f"preview_client_{ui_version}")
+        edited_title = st.text_input("Plan Title", result["plan_title"], key=f"preview_title_{ui_version}")
+    with meta_right:
+        edited_destination = st.text_input("Destination", result["destination"], key=f"preview_destination_{ui_version}")
+        st.text_input(
+            "Travel Dates",
+            f"{compact_date(result['start_date'])} - {compact_date(result['end_date'])}",
+            disabled=True,
+            key=f"preview_dates_{ui_version}",
+        )
+
+    remove_cover = False
+    cover_upload = None
+    if result.get("cover_path"):
+        cover_image_col, cover_remove_col = st.columns([8, 2])
+        with cover_image_col:
+            st.image(result["cover_path"], width=520)
+            with st.expander("Replace Image"):
+                cover_upload = st.file_uploader(
+                    "Upload a new cover image",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    key=f"cover_replacement_{ui_version}",
+                    label_visibility="collapsed",
+                )
+        with cover_remove_col:
+            remove_cover = st.button("✕ Remove cover", key=f"remove_cover_{ui_version}")
+
+    edited_days = []
+    image_uploads = []
+    image_removal_requests = []
+    for idx, day in enumerate(result["days"]):
+        with st.container(border=True, key=f"document_page_{idx}"):
+            st.markdown(
+                f"<div class='document-date'>Day {idx + 1} · {format_day_label(day['date'])}</div>",
+                unsafe_allow_html=True,
             )
-            apply_prompt = st.form_submit_button("Apply AI Changes")
-    if apply_prompt:
-        if change_prompt.strip():
-            previous_places = [list(day.get("places", [])) for day in result["days"]]
-            revised_days = revise_plan_with_prompt(result["days"], change_prompt, result["destination"])
-            result["days"] = revised_days
-            image_changed = apply_prompt_image_changes(result, change_prompt)
-            revised_places = [list(day.get("places", [])) for day in result["days"]]
-            if not image_changed and revised_places != previous_places:
-                new_cover, new_day_images = build_image_bundle(result["days"], result["destination"])
-                result["cover_path"] = new_cover
-                result["day_images"] = new_day_images
-                image_changed = True
-            for day in result["days"]:
-                day.pop("editor_html", None)
+            editor_value = st_quill(
+                value=day.get("editor_html") or day_to_editor_html(day),
+                html=True,
+                toolbar=[["bold", "italic", "underline"], [{"list": "ordered"}, {"list": "bullet"}], ["clean"]],
+                key=f"day_editor_{ui_version}_{idx}",
+            )
+            current_images = result["day_images"][idx] if idx < len(result["day_images"]) else []
+            visible_images = [(original_index, entry) for original_index, entry in enumerate(current_images) if entry.get("path")]
+            if visible_images:
+                image_columns = st.columns(min(len(visible_images), 2))
+                for image_idx, (original_index, entry) in enumerate(visible_images):
+                    with image_columns[image_idx % len(image_columns)]:
+                        st.image(entry["path"], caption=entry.get("place", "Travel image"), width="stretch")
+                        with st.expander("Replace Image"):
+                            uploaded = st.file_uploader(
+                                "Upload a replacement",
+                                type=["png", "jpg", "jpeg", "webp"],
+                                key=f"replace_image_{ui_version}_{idx}_{original_index}",
+                                label_visibility="collapsed",
+                            )
+                            image_uploads.append((idx, original_index, uploaded))
+                        if st.button(f"✕ Remove D{idx + 1}-{image_idx + 1}", key=f"remove_{ui_version}_{idx}_{original_index}"):
+                            image_removal_requests.append((idx, original_index))
+        edited_days.append(editor_html_to_day(editor_value, day))
+
+    if remove_cover or image_removal_requests:
+        if remove_cover:
+            result["cover_path"] = None
+        for day_index, image_index in sorted(image_removal_requests, reverse=True):
+            if day_index < len(result["day_images"]) and image_index < len(result["day_images"][day_index]):
+                result["day_images"][day_index].pop(image_index)
+        result["ui_version"] = time.time_ns()
+        rebuild_result_documents(result)
+        st.session_state["trip_result"] = result
+        st.rerun()
+
+    if cover_upload:
+        new_cover = save_uploaded_image(cover_upload)
+        if new_cover:
+            result["cover_path"] = new_cover
+            result["ui_version"] = time.time_ns()
             rebuild_result_documents(result)
             st.session_state["trip_result"] = result
-            if image_changed:
-                st.success("AI changes applied to the travel plan and images.")
-            else:
-                st.success("AI changes applied to the travel plan.")
+            st.rerun()
+
+    for day_index, image_index, uploaded in image_uploads:
+        if not uploaded:
+            continue
+        image_path = save_uploaded_image(uploaded)
+        if image_path and day_index < len(result["day_images"]) and image_index < len(result["day_images"][day_index]):
+            old_place = result["day_images"][day_index][image_index].get("place", "Travel image")
+            result["day_images"][day_index][image_index] = {"place": old_place, "path": image_path}
+            result["ui_version"] = time.time_ns()
+            rebuild_result_documents(result)
+            st.session_state["trip_result"] = result
+            st.rerun()
+
+    def day_signature(item: dict):
+        return tuple(str(item.get(field, "")) for field in ("title", "morning", "afternoon", "evening")) + (tuple(item.get("places", [])),)
+
+    manual_changed = (
+        edited_client.strip() != result["client_name"]
+        or edited_title.strip() != result["plan_title"]
+        or edited_destination.strip() != result["destination"]
+        or any(day_signature(edited) != day_signature(original) for edited, original in zip(edited_days, result["days"]))
+    )
+    if manual_changed:
+        result["client_name"] = edited_client.strip() or result["client_name"]
+        result["plan_title"] = edited_title.strip() or result["plan_title"]
+        result["destination"] = edited_destination.strip() or result["destination"]
+        result["days"] = edited_days
+        rebuild_result_documents(result)
+        st.session_state["trip_result"] = result
+        st.rerun()
+
+    with st.expander("AI Change Assistant", expanded=False):
+        with st.form("prompt_change_form"):
+            change_prompt = st.text_area("What would you like to change?", placeholder="", height=95)
+            prompt_reference = st.file_uploader(
+                "Attach a reference image (optional)",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="ai_reference_image",
+            )
+            use_as_replacement = st.checkbox("Use attached image as the new replacement")
+            apply_prompt = st.form_submit_button("Apply AI Changes")
+
+    if apply_prompt:
+        if change_prompt.strip():
+            reference_payload = None
+            uploaded_path = None
+            if prompt_reference:
+                reference_payload = {
+                    "bytes": prompt_reference.getvalue(),
+                    "mime_type": prompt_reference.type or "image/jpeg",
+                }
+                if use_as_replacement:
+                    uploaded_path = save_uploaded_image(prompt_reference)
+            previous_places = [list(day.get("places", [])) for day in result["days"]]
+            result["days"] = revise_plan_with_prompt(
+                result["days"], change_prompt, result["destination"], reference_payload
+            )
+            image_changed = apply_prompt_image_changes(result, change_prompt, uploaded_path)
+            revised_places = [list(day.get("places", [])) for day in result["days"]]
+            if not image_changed and revised_places != previous_places:
+                result["cover_path"], result["day_images"] = build_image_bundle(result["days"], result["destination"])
+            for day in result["days"]:
+                day.pop("editor_html", None)
+            result["ui_version"] = time.time_ns()
+            rebuild_result_documents(result)
+            st.session_state["trip_result"] = result
             st.rerun()
         else:
             st.warning("Please enter the change you want.")
 
-    preview_tab, download_tab = st.tabs(["Document Preview", "Download"])
-
-    with download_tab:
-        pdf_col, word_col = st.columns(2)
-        with pdf_col:
-            st.download_button(
-                label="Download PDF",
-                data=result["pdf_bytes"],
-                file_name=f"{slugify(result['destination'])}_travel_plan.pdf",
-                mime="application/pdf",
-            )
-        with word_col:
-            st.download_button(
-                label="Download Word",
-                data=result["docx_bytes"],
-                file_name=f"{slugify(result['destination'])}_travel_plan.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-
-    with preview_tab:
-        st.markdown("<div class='preview-heading'>Travel Plan</div>", unsafe_allow_html=True)
-        st.caption("Click directly inside the document text to edit it.")
-        with st.form("editable_travel_plan"):
-            meta_left, meta_right = st.columns(2)
-            with meta_left:
-                edited_client = st.text_input("Client Name", result["client_name"])
-                edited_title = st.text_input("Plan Title", result["plan_title"])
-            with meta_right:
-                edited_destination = st.text_input("Destination", result["destination"])
-                st.text_input(
-                    "Travel Dates",
-                    f"{compact_date(result['start_date'])} - {compact_date(result['end_date'])}",
-                    disabled=True,
-                )
-
-            remove_cover = False
-            if result.get("cover_path"):
-                cover_image_col, cover_remove_col = st.columns([8, 2])
-                with cover_image_col:
-                    st.image(result["cover_path"], width=520)
-                with cover_remove_col:
-                    remove_cover = st.form_submit_button("✕ Remove cover")
-
-            with st.expander("Change cover image (optional)"):
-                cover_upload = st.file_uploader(
-                    "Cover image",
-                    type=["png", "jpg", "jpeg", "webp"],
-                    key="cover_replacement",
-                    label_visibility="collapsed",
-                )
-
-            edited_days = []
-            image_uploads = []
-            image_removal_requests = []
-            for idx, day in enumerate(result["days"]):
-                with st.container(border=True, key=f"document_page_{idx}"):
-                    st.markdown(
-                        f"<div class='document-date'>Day {idx + 1} · {format_day_label(day['date'])}</div>",
-                        unsafe_allow_html=True,
-                    )
-                    editor_value = st_quill(
-                        value=day.get("editor_html") or day_to_editor_html(day),
-                        html=True,
-                        toolbar=[["bold", "italic", "underline"], [{"list": "ordered"}, {"list": "bullet"}], ["clean"]],
-                        key=f"day_editor_{idx}",
-                    )
-                    current_images = result["day_images"][idx] if idx < len(result["day_images"]) else []
-                    visible_images = [(original_index, entry) for original_index, entry in enumerate(current_images) if entry.get("path")]
-                    if visible_images:
-                        image_columns = st.columns(min(len(visible_images), 2))
-                        for image_idx, (original_index, entry) in enumerate(visible_images):
-                            with image_columns[image_idx % len(image_columns)]:
-                                st.image(entry["path"], caption=entry.get("place", "Travel image"), use_container_width=True)
-                                remove_clicked = st.form_submit_button(f"✕ Remove D{idx + 1}-{image_idx + 1}")
-                                if remove_clicked:
-                                    image_removal_requests.append((idx, original_index))
-                    with st.expander("Replace images"):
-                        uploads = st.file_uploader(
-                            "Upload replacement images",
-                            type=["png", "jpg", "jpeg", "webp"],
-                            accept_multiple_files=True,
-                            key=f"day_images_{idx}",
-                            label_visibility="collapsed",
-                        )
-                edited_days.append(editor_html_to_day(editor_value, day))
-                image_uploads.append(uploads)
-
-            apply_edits = st.form_submit_button("Save Changes")
-
-        if remove_cover or image_removal_requests:
-            if remove_cover:
-                result["cover_path"] = None
-            for day_index, image_index in sorted(image_removal_requests, reverse=True):
-                if day_index < len(result["day_images"]) and image_index < len(result["day_images"][day_index]):
-                    result["day_images"][day_index].pop(image_index)
-            rebuild_result_documents(result)
-            st.session_state["trip_result"] = result
-            st.success("Image removed from the travel plan.")
-            st.rerun()
-        elif apply_edits:
-            result["client_name"] = edited_client.strip() or result["client_name"]
-            result["plan_title"] = edited_title.strip() or result["plan_title"]
-            result["destination"] = edited_destination.strip() or result["destination"]
-            result["days"] = edited_days
-            new_cover = save_uploaded_image(cover_upload)
-            if new_cover:
-                result["cover_path"] = new_cover
-            for idx, uploads in enumerate(image_uploads):
-                if not uploads:
-                    continue
-                replacements = []
-                for image_idx, uploaded in enumerate(uploads[:4]):
-                    image_path = save_uploaded_image(uploaded)
-                    if image_path:
-                        places = result["days"][idx].get("places", [])
-                        label = places[image_idx] if image_idx < len(places) else f"Day {idx + 1} image"
-                        replacements.append({"place": label, "path": image_path})
-                if replacements:
-                    result["day_images"][idx] = replacements
-            rebuild_result_documents(result)
-            st.session_state["trip_result"] = result
-            st.success("Travel plan updated.")
-            st.rerun()
+    st.markdown("---")
+    st.markdown("### Download")
+    pdf_col, word_col = st.columns(2)
+    with pdf_col:
+        st.download_button(
+            label="Download PDF",
+            data=result["pdf_bytes"],
+            file_name=f"{slugify(result['destination'])}_travel_plan.pdf",
+            mime="application/pdf",
+        )
+    with word_col:
+        st.download_button(
+            label="Download Word",
+            data=result["docx_bytes"],
+            file_name=f"{slugify(result['destination'])}_travel_plan.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
 
     st.markdown("---")
     st.caption("Rate this travel plan")
