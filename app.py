@@ -1408,7 +1408,7 @@ def build_image_bundle(days: list[dict], destination: str):
         cover_candidates = [destination]
 
     unique_places = []
-    planned_places = [place for day in days for place in day.get("places", [])[:2]]
+    planned_places = [place for day in days for place in day.get("places", [])[:4]]
     for place in cover_candidates + planned_places:
         if place not in unique_places:
             unique_places.append(place)
@@ -1443,7 +1443,7 @@ def build_image_bundle(days: list[dict], destination: str):
     day_images: list[list[dict]] = []
     for day in days:
         entries: list[dict] = []
-        for place in day.get("places", [])[:2]:
+        for place in day.get("places", [])[:4]:
             entry = results.get(place, {"place": place, "url": None, "path": None})
             path = entry.get("path")
             source = (entry.get("url") or "").split("?", 1)[0] or path
@@ -1455,6 +1455,8 @@ def build_image_bundle(days: list[dict], destination: str):
                 if fingerprint:
                     used_fingerprints.add(fingerprint)
                 used_places.add(place)
+                if len(entries) == 2:
+                    break
 
         day_images.append(entries[:2])
 
@@ -2156,6 +2158,13 @@ st.markdown(
         border-color: #d71920 !important;
         background: #fffafa !important;
     }
+    [class*="st-key-document_page_"] [data-testid="stImage"] img {
+        width: 100% !important;
+        height: 340px !important;
+        max-height: 340px !important;
+        object-fit: cover !important;
+        border-radius: 12px !important;
+    }
     .st-key-download_section {
         background:
             linear-gradient(90deg, #d71920 0 6px, transparent 6px),
@@ -2228,11 +2237,11 @@ if generate:
     if not client_name.strip() or not destination.strip():
         st.error("Please enter client name and destination.")
         st.stop()
-    progress = progress_placeholder.progress(5)
+    progress = progress_placeholder.progress(5, text="Creating your itinerary...")
     itinerary_days = get_ai_plan(client_name, destination, start_date, end_date)
-    progress.progress(35)
+    progress.progress(35, text="Finding verified destination images...")
     cover_path, day_images = build_image_bundle(itinerary_days, destination)
-    progress.progress(80)
+    progress.progress(75, text="Building your PDF...")
     pdf_bytes = build_pdf(
         client=client_name,
         title=plan_title,
@@ -2243,6 +2252,7 @@ if generate:
         cover_path=cover_path,
         day_images=day_images,
     )
+    progress.progress(88, text="Building your Word document...")
     docx_bytes = build_docx(
         client=client_name,
         title=plan_title,
@@ -2253,7 +2263,8 @@ if generate:
         cover_path=cover_path,
         day_images=day_images,
     )
-    progress.progress(100)
+    progress.progress(98, text="Finalizing your travel plan...")
+    progress.progress(100, text="Travel plan ready")
     progress.empty()
     st.session_state["trip_result"] = {
         "client_name": client_name,
@@ -2317,7 +2328,7 @@ if result:
             current_images = result["day_images"][idx] if idx < len(result["day_images"]) else []
             visible_images = [(original_index, entry) for original_index, entry in enumerate(current_images) if entry.get("path")]
             if visible_images:
-                image_columns = st.columns(min(len(visible_images), 2))
+                image_columns = st.columns(2)
                 for image_idx, (original_index, entry) in enumerate(visible_images):
                     with image_columns[image_idx % len(image_columns)]:
                         st.image(entry["path"], caption=entry.get("place", "Travel image"), width="stretch")
