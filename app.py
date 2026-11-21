@@ -1049,6 +1049,14 @@ def save_pdf_ready_image(content: bytes, max_width: int = 1000, max_height: int 
 
 
 def download_image(url: str, suffix: str = ".jpg"):
+    decoded_url = requests.utils.unquote(url).lower()
+    rejected_markers = (
+        "logo", "emblem", "crest", "seal", "badge", "wordmark", "symbol",
+        "icon", "coat_of_arms", "coat-of-arms", "portrait", "headshot",
+    )
+    clean_path = decoded_url.split("?", 1)[0]
+    if any(marker in decoded_url for marker in rejected_markers) or clean_path.endswith((".svg", ".png")):
+        return None
     # Retry downloads a few times with backoff to reduce intermittent failures.
     headers = {
         "User-Agent": "AI-Travel-Planner/1.0 (+https://github.com/abdullahkrajpoot-dot/Ai-Travel-Planner-Agent)",
@@ -1114,8 +1122,18 @@ def _is_relevant_image_result(query: str, label: str) -> bool:
     banned_result_tokens = {
         "logo", "basketball", "football", "baseball", "hockey", "team", "club",
         "season", "jersey", "mascot", "album", "film", "television", "game",
+        "emblem", "crest", "seal", "badge", "wordmark", "symbol", "icon",
+        "portrait", "headshot", "painting", "drawing", "illustration", "poster",
     }
     return primary_overlap >= primary_required and not banned_result_tokens.intersection(label_tokens)
+
+
+def _image_url_matches_query(query: str, url: str) -> bool:
+    """Require the actual image filename to describe the requested place."""
+    decoded = requests.utils.unquote(url).split("?", 1)[0]
+    filename = decoded.rsplit("/", 1)[-1]
+    filename = re.sub(r"^\d+px-", "", filename, flags=re.IGNORECASE)
+    return _is_relevant_image_result(query, filename)
 
 
 def _wikipedia_summary_image(query: str) -> str | None:
@@ -1222,7 +1240,7 @@ def _commons_search_image(query: str) -> str | None:
             "list": "search",
             "srsearch": query,
             "srnamespace": 6,  # File namespace on Commons
-            "srlimit": 4,
+            "srlimit": 12,
         }
         resp = requests.get("https://commons.wikimedia.org/w/api.php", params=search_params, timeout=20, headers=WIKI_HEADERS)
         resp.raise_for_status()
@@ -1354,50 +1372,29 @@ def _web_image_search_urls(query: str) -> list[str]:
 
 
 def build_place_image(place_name: str, destination: str | None = None):
-    # Strict place matching first to keep image relevance high.
+    # Prefer file-level Commons results. Any Wikipedia fallback must also have
+    # an image filename that explicitly matches the requested location.
     queries = _candidate_place_queries(place_name, destination)
-    best_url = None
 
     for query in queries:
-        page_url = _wikipedia_page_image(query)
-        if page_url:
-            best_url = best_url or page_url
-            path = download_image(page_url, suffix=".jpg")
+        commons_url = _commons_search_image(query)
+        if commons_url and _image_url_matches_query(query, commons_url):
+            path = download_image(commons_url, suffix=".jpg")
             if path:
-                return {"place": place_name, "url": page_url, "path": path}
+                return {"place": place_name, "url": commons_url, "path": path}
 
-        direct_url = _wikipedia_summary_image(query)
-        if direct_url:
-            best_url = best_url or direct_url
-            path = download_image(direct_url, suffix=".jpg")
+        for candidate_url in (
+            _wikipedia_page_image(query),
+            _wikipedia_summary_image(query),
+            _wikipedia_search_image(query),
+        ):
+            if not candidate_url or not _image_url_matches_query(query, candidate_url):
+                continue
+            path = download_image(candidate_url, suffix=".jpg")
             if path:
-                return {"place": place_name, "url": direct_url, "path": path}
+                return {"place": place_name, "url": candidate_url, "path": path}
 
-        searched_url = _wikipedia_search_image(query)
-        if not searched_url:
-            # Try Wikimedia Commons as an additional fallback for image search
-            commons_url = _commons_search_image(query)
-            if commons_url:
-                best_url = best_url or commons_url
-                path = download_image(commons_url, suffix=".jpg")
-                if path:
-                    return {"place": place_name, "url": commons_url, "path": path}
-            continue
-        best_url = best_url or searched_url
-        path = download_image(searched_url, suffix=".jpg")
-        if path:
-            return {"place": place_name, "url": searched_url, "path": path}
-
-    fallback_urls = []
-    if best_url:
-        fallback_urls.append(best_url)
-
-    for fallback_url in fallback_urls:
-        path = download_image(fallback_url, suffix=".jpg")
-        if path:
-            return {"place": place_name, "url": fallback_url, "path": path}
-
-    return {"place": place_name, "url": fallback_urls[0] if fallback_urls else None, "path": None}
+    return {"place": place_name, "url": None, "path": None}
 
 
 def build_image_bundle(days: list[dict], destination: str):
@@ -2023,16 +2020,20 @@ st.markdown(
         background: #f6f6f6 !important;
     }
     .stApp, [data-testid="stAppViewContainer"] {
-        background: linear-gradient(180deg, #ffffff 0%, #f7f7f7 42%, #ffffff 100%) !important;
+        background:
+            radial-gradient(circle at 82% 12%, rgba(215, 25, 32, .075), transparent 24rem),
+            radial-gradient(circle at 35% 82%, rgba(20, 20, 20, .035), transparent 30rem),
+            linear-gradient(145deg, #fffafa 0%, #f5f5f5 48%, #ffffff 100%) !important;
         color: #171717 !important;
     }
     [data-testid="stMainBlockContainer"] {
         padding-top: 1rem !important;
     }
     [data-testid="stSidebar"] {
-        background: #ffffff !important;
+        background:
+            linear-gradient(180deg, #ffffff 0%, #fff8f8 58%, #f5f5f5 100%) !important;
         border-right: 1px solid #dedede !important;
-        box-shadow: 8px 0 28px rgba(0, 0, 0, .035);
+        box-shadow: 10px 0 32px rgba(0, 0, 0, .055);
     }
     [data-testid="stSidebar"] * {
         color: #171717 !important;
@@ -2049,6 +2050,18 @@ st.markdown(
             radial-gradient(circle at 92% 18%, rgba(215,25,32,.13) 0 74px, transparent 75px),
             linear-gradient(115deg, #ffffff 0%, #fffafa 68%, #f7f7f7 100%) !important;
         box-shadow: 0 14px 34px rgba(0, 0, 0, .08) !important;
+        position: relative;
+        overflow: hidden;
+    }
+    .main-header::before {
+        content: "";
+        position: absolute;
+        width: 220px;
+        height: 220px;
+        right: -92px;
+        bottom: -150px;
+        border: 24px solid rgba(215, 25, 32, .08);
+        border-radius: 50%;
     }
     .main-header::after {
         content: "PLAN • EDIT • DOWNLOAD";
@@ -2079,6 +2092,10 @@ st.markdown(
     [data-testid="stSidebar"] [data-testid="stTextInputRootElement"]:focus-within {
         border-color: #d71920 !important;
         box-shadow: 0 0 0 1px #d71920 !important;
+    }
+    [data-testid="stSidebar"] .stTextInput input,
+    [data-testid="stSidebar"] [data-testid="stDateInput"] > div {
+        box-shadow: 0 5px 14px rgba(0, 0, 0, .045) !important;
     }
     div[data-baseweb="input"], div[data-baseweb="base-input"],
     [data-testid="stSidebar"] div[data-baseweb="input"],
@@ -2144,7 +2161,7 @@ st.markdown(
         background: #ffffff !important;
         border: 1px solid #d9d9d9 !important;
         border-top: 3px solid #d71920 !important;
-        box-shadow: 0 10px 26px rgba(0, 0, 0, .055) !important;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, .075) !important;
     }
     [class*="st-key-document_page_"] .stTextInput > label,
     [class*="st-key-document_page_"] .stTextArea > label,
@@ -2172,6 +2189,13 @@ st.markdown(
         border: 1px solid #dedede !important;
         box-shadow: 0 12px 30px rgba(0, 0, 0, .07) !important;
         padding: 1.4rem 1.5rem 1.5rem 1.75rem !important;
+    }
+    .st-key-download_section::after {
+        content: "PDF  •  WORD";
+        color: #b90f17;
+        font-size: .72rem;
+        font-weight: 800;
+        letter-spacing: .12em;
     }
     .st-key-download_section [data-testid="stCaptionContainer"] {
         color: #626262 !important;
@@ -2218,7 +2242,6 @@ with st.sidebar:
         "Travel Dates",
         value=(datetime.now().date(), datetime.now().date() + timedelta(days=5)),
         min_value=datetime.now().date(),
-        help="Select the departure date first, then the return date.",
     )
     if isinstance(travel_dates, (tuple, list)) and len(travel_dates) == 2:
         start_date, end_date = travel_dates
@@ -2423,8 +2446,7 @@ if result:
             st.warning("Please enter the change you want.")
 
     with st.container(border=True, key="download_section"):
-        st.markdown("<div class='download-title'>Download your travel plan</div>", unsafe_allow_html=True)
-        st.caption("Your latest preview changes are included automatically.")
+        st.markdown("<div class='download-title'>Download Your Travel Plan</div>", unsafe_allow_html=True)
         pdf_col, word_col = st.columns(2)
         with pdf_col:
             st.download_button(
