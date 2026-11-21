@@ -2151,7 +2151,6 @@ if result:
                 type=["png", "jpg", "jpeg", "webp"],
                 key="ai_reference_image",
             )
-            use_as_replacement = st.checkbox("Use attached image as the new replacement")
             apply_prompt = st.form_submit_button("Apply AI Changes")
 
     if apply_prompt:
@@ -2163,8 +2162,7 @@ if result:
                     "bytes": prompt_reference.getvalue(),
                     "mime_type": prompt_reference.type or "image/jpeg",
                 }
-                if use_as_replacement:
-                    uploaded_path = save_uploaded_image(prompt_reference)
+                uploaded_path = save_uploaded_image(prompt_reference)
             previous_places = [list(day.get("places", [])) for day in result["days"]]
             result["days"] = revise_plan_with_prompt(
                 result["days"], change_prompt, result["destination"], reference_payload
