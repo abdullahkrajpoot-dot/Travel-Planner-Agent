@@ -2048,7 +2048,6 @@ result = st.session_state.get("trip_result")
 if result:
     ui_version = result.get("ui_version", 0)
     st.markdown("<div class='preview-heading'>Travel Plan</div>", unsafe_allow_html=True)
-    st.caption("Click directly inside the document text to edit it. Changes save automatically.")
 
     meta_left, meta_right = st.columns(2)
     with meta_left:
@@ -2063,25 +2062,19 @@ if result:
             key=f"preview_dates_{ui_version}",
         )
 
-    remove_cover = False
     cover_upload = None
     if result.get("cover_path"):
-        cover_image_col, cover_remove_col = st.columns([8, 2])
-        with cover_image_col:
-            st.image(result["cover_path"], width=520)
-            with st.expander("Replace Image"):
-                cover_upload = st.file_uploader(
-                    "Upload a new cover image",
-                    type=["png", "jpg", "jpeg", "webp"],
-                    key=f"cover_replacement_{ui_version}",
-                    label_visibility="collapsed",
-                )
-        with cover_remove_col:
-            remove_cover = st.button("✕ Remove cover", key=f"remove_cover_{ui_version}")
+        st.image(result["cover_path"], width=520)
+        with st.expander("Replace Image"):
+            cover_upload = st.file_uploader(
+                "Upload a new cover image",
+                type=["png", "jpg", "jpeg", "webp"],
+                key=f"cover_replacement_{ui_version}",
+                label_visibility="collapsed",
+            )
 
     edited_days = []
     image_uploads = []
-    image_removal_requests = []
     for idx, day in enumerate(result["days"]):
         with st.container(border=True, key=f"document_page_{idx}"):
             st.markdown(
@@ -2109,20 +2102,7 @@ if result:
                                 label_visibility="collapsed",
                             )
                             image_uploads.append((idx, original_index, uploaded))
-                        if st.button(f"✕ Remove D{idx + 1}-{image_idx + 1}", key=f"remove_{ui_version}_{idx}_{original_index}"):
-                            image_removal_requests.append((idx, original_index))
         edited_days.append(editor_html_to_day(editor_value, day))
-
-    if remove_cover or image_removal_requests:
-        if remove_cover:
-            result["cover_path"] = None
-        for day_index, image_index in sorted(image_removal_requests, reverse=True):
-            if day_index < len(result["day_images"]) and image_index < len(result["day_images"][day_index]):
-                result["day_images"][day_index].pop(image_index)
-        result["ui_version"] = time.time_ns()
-        rebuild_result_documents(result)
-        st.session_state["trip_result"] = result
-        st.rerun()
 
     if cover_upload:
         new_cover = save_uploaded_image(cover_upload)
