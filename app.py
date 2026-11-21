@@ -2182,6 +2182,13 @@ st.markdown(
         object-fit: cover !important;
         border-radius: 12px !important;
     }
+    .st-key-cover_image_card [data-testid="stImage"] img {
+        width: 100% !important;
+        height: 320px !important;
+        max-height: 320px !important;
+        object-fit: cover !important;
+        border-radius: 12px !important;
+    }
     .st-key-download_section {
         background:
             linear-gradient(90deg, #d71920 0 6px, transparent 6px),
@@ -2325,14 +2332,17 @@ if result:
 
     cover_upload = None
     if result.get("cover_path"):
-        st.image(result["cover_path"], width=520)
-        with st.expander("Replace Image"):
-            cover_upload = st.file_uploader(
-                "Upload a new cover image",
-                type=["png", "jpg", "jpeg", "webp"],
-                key=f"cover_replacement_{ui_version}",
-                label_visibility="collapsed",
-            )
+        cover_col, _ = st.columns(2)
+        with cover_col:
+            with st.container(key="cover_image_card"):
+                st.image(result["cover_path"], width="stretch")
+                with st.expander("Replace Image"):
+                    cover_upload = st.file_uploader(
+                        "Upload a new cover image",
+                        type=["png", "jpg", "jpeg", "webp"],
+                        key=f"cover_replacement_{ui_version}",
+                        label_visibility="collapsed",
+                    )
 
     edited_days = []
     image_uploads = []
