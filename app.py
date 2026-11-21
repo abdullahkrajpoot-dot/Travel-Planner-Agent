@@ -19,6 +19,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 from fpdf import FPDF
 from PIL import Image, UnidentifiedImageError
+from streamlit_chat_prompt import prompt as multimodal_prompt
 from streamlit_quill import st_quill
 
 
@@ -1424,12 +1425,19 @@ def build_image_bundle(days: list[dict], destination: str):
 
     cover_path = None
     used_sources: set[str] = set()
+    used_fingerprints: set[str] = set()
     used_places: set[str] = set()
     for place in cover_candidates:
         entry = results.get(place, {})
         path = entry.get("path")
         if path:
             cover_path = path
+            source = (entry.get("url") or "").split("?", 1)[0]
+            if source:
+                used_sources.add(source)
+            fingerprint = image_fingerprint(path)
+            if fingerprint:
+                used_fingerprints.add(fingerprint)
             break
 
     day_images: list[list[dict]] = []
@@ -1438,15 +1446,33 @@ def build_image_bundle(days: list[dict], destination: str):
         for place in day.get("places", [])[:2]:
             entry = results.get(place, {"place": place, "url": None, "path": None})
             path = entry.get("path")
-            source = path or entry.get("url")
-            if source and source not in used_sources and place not in used_places:
+            source = (entry.get("url") or "").split("?", 1)[0] or path
+            fingerprint = image_fingerprint(path) if path else None
+            is_duplicate = source in used_sources or (fingerprint and fingerprint in used_fingerprints)
+            if source and not is_duplicate and place not in used_places:
                 entries.append(entry)
                 used_sources.add(source)
+                if fingerprint:
+                    used_fingerprints.add(fingerprint)
                 used_places.add(place)
 
         day_images.append(entries[:2])
 
     return cover_path, day_images
+
+
+def image_fingerprint(path: str | None) -> str | None:
+    """Return a compact visual fingerprint so repeated photos are not shown twice."""
+    if not path:
+        return None
+    try:
+        with Image.open(path) as image:
+            grayscale = image.convert("L").resize((16, 16))
+            pixels = list(grayscale.getdata())
+            average = sum(pixels) / len(pixels)
+            return "".join("1" if pixel >= average else "0" for pixel in pixels)
+    except (OSError, UnidentifiedImageError):
+        return None
 
 
 class TravelPlanPDF(FPDF):
@@ -1960,10 +1986,204 @@ st.markdown(
         color: #167aa4; font-weight: 700; font-size: .92rem;
         border-bottom: 1px solid #d6e5ee; padding-bottom: .65rem; margin-bottom: .55rem;
     }
+    [data-stale="true"] {
+        display: none !important;
+    }
+    .st-key-download_section {
+        margin-top: 2rem !important;
+        padding: 1.35rem !important;
+        background: #ffffff !important;
+        border: 1px solid #b9d8ed !important;
+        border-radius: 16px !important;
+        box-shadow: 0 10px 28px rgba(32, 72, 102, .08);
+    }
+    .download-title {
+        color: #123f63;
+        font-size: 1.55rem;
+        font-weight: 800;
+        line-height: 1.25;
+        margin-bottom: .2rem;
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+
+# ALIBABA_THEME_OVERRIDE_START
+# This block is intentionally isolated. Revert the dedicated theme commit to
+# restore the preserved blue frontend without removing any product features.
+st.markdown(
+    """
+    <style>
+    :root, html, body {
+        color-scheme: light !important;
+        background: #f6f6f6 !important;
+    }
+    .stApp, [data-testid="stAppViewContainer"] {
+        background: linear-gradient(180deg, #ffffff 0%, #f7f7f7 42%, #ffffff 100%) !important;
+        color: #171717 !important;
+    }
+    [data-testid="stMainBlockContainer"] {
+        padding-top: 1rem !important;
+    }
+    [data-testid="stSidebar"] {
+        background: #ffffff !important;
+        border-right: 1px solid #dedede !important;
+        box-shadow: 8px 0 28px rgba(0, 0, 0, .035);
+    }
+    [data-testid="stSidebar"] * {
+        color: #171717 !important;
+    }
+    .main-header {
+        color: #111111 !important;
+        min-height: 132px !important;
+        margin: 0 0 1.25rem 0 !important;
+        padding: 1.75rem 2.35rem !important;
+        border: 1px solid #e1e1e1;
+        border-top: 5px solid #d71920;
+        border-radius: 0 0 18px 18px !important;
+        background:
+            radial-gradient(circle at 92% 18%, rgba(215,25,32,.13) 0 74px, transparent 75px),
+            linear-gradient(115deg, #ffffff 0%, #fffafa 68%, #f7f7f7 100%) !important;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, .08) !important;
+    }
+    .main-header::after {
+        content: "PLAN • EDIT • DOWNLOAD";
+        display: block;
+        margin-left: auto;
+        color: #d71920;
+        font-size: .72rem;
+        font-weight: 800;
+        letter-spacing: .16em;
+    }
+    .preview-heading, .download-title {
+        color: #171717 !important;
+    }
+    .preview-heading {
+        border-left: 5px solid #d71920;
+        padding-left: .8rem;
+    }
+    .stTextInput input, .stDateInput input, .stTextArea textarea,
+    [data-testid="stSidebar"] .stTextInput input,
+    [data-testid="stMain"] .stTextInput input,
+    [data-testid="stMain"] .stTextArea textarea {
+        background: #ffffff !important;
+        color: #171717 !important;
+        -webkit-text-fill-color: #171717 !important;
+        border-color: #cfcfcf !important;
+    }
+    .stTextInput input:focus, .stDateInput input:focus, .stTextArea textarea:focus,
+    [data-testid="stSidebar"] [data-testid="stTextInputRootElement"]:focus-within {
+        border-color: #d71920 !important;
+        box-shadow: 0 0 0 1px #d71920 !important;
+    }
+    div[data-baseweb="input"], div[data-baseweb="base-input"],
+    [data-testid="stSidebar"] div[data-baseweb="input"],
+    [data-testid="stSidebar"] div[data-baseweb="base-input"] {
+        background: #ffffff !important;
+        border-color: #cfcfcf !important;
+    }
+    [data-testid="stDateInput"] div[data-baseweb="input"],
+    [data-testid="stDateInput"] div[data-baseweb="base-input"],
+    [data-testid="stDateInput"] > div > div,
+    [data-testid="stDateInput"] input {
+        background: #fff7f7 !important;
+        color: #171717 !important;
+        -webkit-text-fill-color: #171717 !important;
+        border-color: #dfb4b6 !important;
+    }
+    [data-testid="stDateInput"] svg,
+    [data-testid="stDateInput"] button,
+    [data-testid="stDateInput"] span {
+        color: #d71920 !important;
+        fill: #d71920 !important;
+    }
+    .stButton > button, .stDownloadButton > button,
+    [data-testid="stFormSubmitButton"] > button,
+    .stFormSubmitButton > button {
+        background: linear-gradient(90deg, #b90f17, #e0242b) !important;
+        color: #ffffff !important;
+        border: 1px solid #b90f17 !important;
+        box-shadow: 0 8px 18px rgba(215, 25, 32, .18) !important;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover,
+    [data-testid="stFormSubmitButton"] > button:hover {
+        background: #a90c13 !important;
+        border-color: #8f090f !important;
+    }
+    [data-testid="stExpander"] {
+        background: #ffffff !important;
+        border: 1px solid #d8d8d8 !important;
+        box-shadow: 0 7px 20px rgba(0, 0, 0, .04);
+    }
+    [data-testid="stExpander"] details,
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] [data-testid="stExpanderDetails"] {
+        background: #ffffff !important;
+        color: #171717 !important;
+    }
+    [data-testid="stExpander"] summary:hover {
+        background: #fff5f5 !important;
+    }
+    [data-testid="stExpander"] svg {
+        color: #d71920 !important;
+        fill: #d71920 !important;
+    }
+    [data-testid="stFileUploaderDropzone"] {
+        background: #fffafa !important;
+        border-color: #d8a9ab !important;
+    }
+    [data-testid="stFileUploaderDropzone"] *,
+    [data-testid="stFileUploaderDropzone"] button {
+        color: #171717 !important;
+    }
+    [class*="st-key-document_page_"] {
+        background: #ffffff !important;
+        border: 1px solid #d9d9d9 !important;
+        border-top: 3px solid #d71920 !important;
+        box-shadow: 0 10px 26px rgba(0, 0, 0, .055) !important;
+    }
+    [class*="st-key-document_page_"] .stTextInput > label,
+    [class*="st-key-document_page_"] .stTextArea > label,
+    .document-date {
+        color: #b90f17 !important;
+    }
+    [class*="st-key-document_page_"] .stTextInput input:hover,
+    [class*="st-key-document_page_"] .stTextInput input:focus,
+    [class*="st-key-document_page_"] .stTextArea textarea:hover,
+    [class*="st-key-document_page_"] .stTextArea textarea:focus {
+        border-color: #d71920 !important;
+        background: #fffafa !important;
+    }
+    .st-key-download_section {
+        background:
+            linear-gradient(90deg, #d71920 0 6px, transparent 6px),
+            #ffffff !important;
+        border: 1px solid #dedede !important;
+        box-shadow: 0 12px 30px rgba(0, 0, 0, .07) !important;
+        padding: 1.4rem 1.5rem 1.5rem 1.75rem !important;
+    }
+    .st-key-download_section [data-testid="stCaptionContainer"] {
+        color: #626262 !important;
+    }
+    [data-testid="stFeedback"] svg {
+        color: #d71920 !important;
+        fill: #d71920 !important;
+    }
+    @media (max-width: 720px) {
+        .main-header {
+            min-height: 112px !important;
+            padding: 1.35rem !important;
+            font-size: 1.75rem !important;
+        }
+        .main-header::after { display: none; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+# ALIBABA_THEME_OVERRIDE_END
 
 
 st.markdown("<div class='main-header'>Travel Planner</div>", unsafe_allow_html=True)
@@ -2144,25 +2364,29 @@ if result:
         st.rerun()
 
     with st.expander("AI Change Assistant", expanded=False):
-        with st.form("prompt_change_form"):
-            change_prompt = st.text_area("What would you like to change?", placeholder="", height=95)
-            prompt_reference = st.file_uploader(
-                "Attach a reference image (optional)",
-                type=["png", "jpg", "jpeg", "webp"],
-                key="ai_reference_image",
-            )
-            apply_prompt = st.form_submit_button("Apply AI Changes")
+        st.caption("Type your change, use + to attach an image, or paste an image with Ctrl+V.")
+        prompt_response = multimodal_prompt(
+            name="travel_plan_change",
+            key=f"travel_plan_change_{ui_version}",
+            placeholder="What would you like to change?",
+            main_bottom=False,
+            max_image_file_size=10 * 1024 * 1024,
+            max_image_count=1,
+        )
 
-    if apply_prompt:
-        if change_prompt.strip():
+    if prompt_response:
+        change_prompt = (prompt_response.text or "").strip()
+        if change_prompt:
             reference_payload = None
             uploaded_path = None
-            if prompt_reference:
+            if prompt_response.images:
+                reference_image = prompt_response.images[0]
+                reference_bytes = base64.b64decode(reference_image.data)
                 reference_payload = {
-                    "bytes": prompt_reference.getvalue(),
-                    "mime_type": prompt_reference.type or "image/jpeg",
+                    "bytes": reference_bytes,
+                    "mime_type": reference_image.type or "image/jpeg",
                 }
-                uploaded_path = save_uploaded_image(prompt_reference)
+                uploaded_path = save_pdf_ready_image(reference_bytes)
             previous_places = [list(day.get("places", [])) for day in result["days"]]
             result["days"] = revise_plan_with_prompt(
                 result["days"], change_prompt, result["destination"], reference_payload
@@ -2180,23 +2404,26 @@ if result:
         else:
             st.warning("Please enter the change you want.")
 
-    st.markdown("---")
-    st.markdown("### Download")
-    pdf_col, word_col = st.columns(2)
-    with pdf_col:
-        st.download_button(
-            label="Download PDF",
-            data=result["pdf_bytes"],
-            file_name=f"{slugify(result['destination'])}_travel_plan.pdf",
-            mime="application/pdf",
-        )
-    with word_col:
-        st.download_button(
-            label="Download Word",
-            data=result["docx_bytes"],
-            file_name=f"{slugify(result['destination'])}_travel_plan.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
+    with st.container(border=True, key="download_section"):
+        st.markdown("<div class='download-title'>Download your travel plan</div>", unsafe_allow_html=True)
+        st.caption("Your latest preview changes are included automatically.")
+        pdf_col, word_col = st.columns(2)
+        with pdf_col:
+            st.download_button(
+                label="Download PDF",
+                data=result["pdf_bytes"],
+                file_name=f"{slugify(result['destination'])}_travel_plan.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        with word_col:
+            st.download_button(
+                label="Download Word",
+                data=result["docx_bytes"],
+                file_name=f"{slugify(result['destination'])}_travel_plan.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
 
     st.markdown("---")
     st.caption("Rate this travel plan")

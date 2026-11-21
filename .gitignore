@@ -5,7 +5,8 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 .tools/
 .vscode/
 app.py.backup
