@@ -2363,10 +2363,10 @@ with st.sidebar:
     st.markdown("### Trip Details")
     client_name = st.text_input("Client Name", "", placeholder="Enter client name")
     destination = st.text_input(
-        "Destination",
+        "Destination City / Country",
         "",
-        placeholder="New York, Paris",
-        help="For multiple cities, separate them with a comma. Example: New York, Paris",
+        placeholder="New York, USA",
+        help="Enter both the destination city and country. Example: New York, USA",
     )
     plan_title = st.text_input("Plan Title", "Travel Plan")
     travel_dates = st.date_input(
@@ -2448,7 +2448,11 @@ if result:
         edited_client = st.text_input("Client Name", result["client_name"], key=f"preview_client_{ui_version}")
         edited_title = st.text_input("Plan Title", result["plan_title"], key=f"preview_title_{ui_version}")
     with meta_right:
-        edited_destination = st.text_input("Destination", result["destination"], key=f"preview_destination_{ui_version}")
+        edited_destination = st.text_input(
+            "Destination City / Country",
+            result["destination"],
+            key=f"preview_destination_{ui_version}",
+        )
         st.text_input(
             "Travel Dates",
             f"{compact_date(result['start_date'])} - {compact_date(result['end_date'])}",
