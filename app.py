@@ -2579,7 +2579,7 @@ if result:
 
     with st.expander("AI Change Assistant", expanded=False):
         prompt_response = st.chat_input(
-            placeholder="e.g., Change the Day 4 image or update its heading",
+            placeholder="",
             key=f"travel_plan_change_{ui_version}",
             accept_file=True,
             file_type=["png", "jpg", "jpeg", "webp"],
