@@ -224,13 +224,32 @@ WIKI_HEADERS = {
 BAD_PLACE_WORDS = {
     "seizure", "attack", "battle", "war", "incident", "massacre", "bombing",
     "riot", "siege", "uprising", "crash", "fire", "disaster", "politics",
-    "election", "team", "club", "season",
+    "election", "team", "club", "season", "fc", "football", "soccer", "hockey",
+}
+
+ANIMAL_PLACE_WORDS = {
+    "animal", "animals", "bear", "bears", "bison", "buffalo", "camel", "camels",
+    "deer", "dolphin", "dolphins", "eagle", "eagles", "elk", "fish", "fox",
+    "giraffe", "goat", "goats", "horse", "horses", "kangaroo", "lion", "lions",
+    "monkey", "monkeys", "penguin", "penguins", "sheep", "tiger", "tigers",
+    "whale", "whales", "wildlife", "wolf", "wolves",
+}
+
+VISITABLE_PLACE_WORDS = {
+    "aquarium", "beach", "bridge", "castle", "cave", "center", "centre", "church",
+    "fort", "gallery", "garden", "heritage", "lake", "mall", "market", "memorial",
+    "monument", "mosque", "mount", "mountain", "museum", "park", "palace", "reserve",
+    "sanctuary", "square", "temple", "tower", "trail", "viewpoint", "zoo",
 }
 
 
 def is_valid_place_name(place_name: str) -> bool:
     tokens = set(slugify(place_name).split("_"))
-    return bool(place_name) and not BAD_PLACE_WORDS.intersection(tokens)
+    if not place_name or BAD_PLACE_WORDS.intersection(tokens):
+        return False
+    if ANIMAL_PLACE_WORDS.intersection(tokens) and not VISITABLE_PLACE_WORDS.intersection(tokens):
+        return False
+    return True
 
 
 DESTINATION_LANDMARKS = {
@@ -789,6 +808,8 @@ Rules:
 - Do not repeat the same place on another day unless the trip is longer than the destination's available attractions.
 - Each day's morning, afternoon, and evening text must describe that same day's places.
 - Use visitor attractions only: mosques, museums, mountains, caves, parks, markets, towers, monuments, heritage sites, viewpoints, and malls.
+- Every item in "places" must be a physical, visitable attraction or landmark. Never use an animal, person, species, organization, event, or general cultural topic as a place.
+- Wildlife is allowed only when the place is a named zoo, aquarium, park, reserve, or sanctuary—not an animal name such as "Big Horn Sheep".
 - Do not include events, incidents, attacks, battles, seizures, wars, disasters, hotels, airports, or railway stations as places.
 - Keep the itinerary realistic and tourist-friendly.
 - Do not use the phrase "Signature Highlight" or "Signature Highlights".
@@ -934,7 +955,10 @@ Current plan: {json.dumps(days, default=str)}
                     "morning": safe_text(str(item.get("morning", original.get("morning", "")))),
                     "afternoon": safe_text(str(item.get("afternoon", original.get("afternoon", "")))),
                     "evening": safe_text(str(item.get("evening", original.get("evening", "")))),
-                    "places": normalize_place_list(item.get("places", original.get("places", []))),
+                    "places": [
+                        place for place in normalize_place_list(item.get("places", original.get("places", [])))
+                        if is_valid_place_name(place)
+                    ],
                 }
             )
         original_signature = [
@@ -989,6 +1013,36 @@ def is_image_only_instruction(instruction: str) -> bool:
     return not bool(text_targets.search(instruction or ""))
 
 
+def build_unique_replacement_image(result: dict, queries: list[str]) -> dict | None:
+    """Find a relevant photo that is not already used anywhere in the plan."""
+    existing_entries = [
+        entry for entries in result.get("day_images", []) for entry in entries
+    ]
+    excluded_urls = {
+        (entry.get("url") or "").split("?", 1)[0]
+        for entry in existing_entries if entry.get("url")
+    }
+    existing_fingerprints = {
+        fingerprint for fingerprint in (
+            image_fingerprint(entry.get("path")) for entry in existing_entries
+        ) if fingerprint
+    }
+    destination = result.get("destination", "")
+    for query in queries:
+        for _ in range(3):
+            candidate = build_place_image(query, destination, excluded_urls)
+            if not candidate or not candidate.get("path"):
+                break
+            candidate_url = (candidate.get("url") or "").split("?", 1)[0]
+            candidate_fingerprint = image_fingerprint(candidate.get("path"))
+            if candidate_url:
+                excluded_urls.add(candidate_url)
+            if candidate_fingerprint and candidate_fingerprint in existing_fingerprints:
+                continue
+            return candidate
+    return None
+
+
 def apply_prompt_image_changes(result: dict, instruction: str, uploaded_path: str | None = None) -> bool:
     lowered = (instruction or "").lower()
     image_words = r"(?:image|images|im[a-z]{1,6}ge|im[a-z]{1,6}ges|img|picture|pictures|photo|photos|pic|pics|tasveer|tasveeren|tasveerain|tasvir|tasweer)"
@@ -1014,8 +1068,13 @@ def apply_prompt_image_changes(result: dict, instruction: str, uploaded_path: st
     if day_match:
         day_index = min(max(int(day_match.group(1)) - 1, 0), len(result["day_images"]) - 1)
         entries = result["day_images"][day_index]
-        query = replacement_query or (result["days"][day_index].get("places") or [destination])[0]
-        replacement = {"place": query, "path": uploaded_path} if uploaded_path else build_place_image(query, destination)
+        day_places = result["days"][day_index].get("places") or [destination]
+        query = replacement_query or day_places[0]
+        replacement = (
+            {"place": query, "path": uploaded_path}
+            if uploaded_path
+            else build_unique_replacement_image(result, [query, *day_places[1:]])
+        )
         if replacement and replacement.get("path"):
             if entries:
                 entries[0] = replacement
@@ -1037,7 +1096,11 @@ def apply_prompt_image_changes(result: dict, instruction: str, uploaded_path: st
         if flattened:
             day_index, image_index, old_entry = flattened[min(requested_position, len(flattened) - 1)]
             query = replacement_query or old_entry.get("place") or destination
-            replacement = {"place": query, "path": uploaded_path} if uploaded_path else build_place_image(query, destination)
+            replacement = (
+                {"place": query, "path": uploaded_path}
+                if uploaded_path
+                else build_unique_replacement_image(result, [query])
+            )
             if replacement and replacement.get("path"):
                 result["day_images"][day_index][image_index] = replacement
                 return True
@@ -1258,7 +1321,7 @@ def _wikipedia_search_image(query: str) -> str | None:
         return None
 
 
-def _commons_search_image(query: str) -> str | None:
+def _commons_search_image(query: str, excluded_urls: set[str] | None = None) -> str | None:
     """Search Wikimedia Commons for a matching file and return a direct image URL."""
     try:
         search_params = {
@@ -1307,7 +1370,8 @@ def _commons_search_image(query: str) -> str | None:
                 imageinfo = page.get("imageinfo") or []
                 if imageinfo:
                     url = imageinfo[0].get("thumburl") or imageinfo[0].get("url")
-                    if url and url.startswith("http"):
+                    normalized_url = (url or "").split("?", 1)[0]
+                    if url and url.startswith("http") and normalized_url not in (excluded_urls or set()):
                         return url
         return None
     except Exception:
@@ -1398,13 +1462,17 @@ def _web_image_search_urls(query: str) -> list[str]:
     return urls
 
 
-def build_place_image(place_name: str, destination: str | None = None):
+def build_place_image(
+    place_name: str,
+    destination: str | None = None,
+    excluded_urls: set[str] | None = None,
+):
     # Prefer file-level Commons results. Any Wikipedia fallback must also have
     # an image filename that explicitly matches the requested location.
     queries = _candidate_place_queries(place_name, destination)
 
     for query in queries:
-        commons_url = _commons_search_image(query)
+        commons_url = _commons_search_image(query, excluded_urls)
         if commons_url and _image_url_matches_query(query, commons_url):
             path = download_image(commons_url, suffix=".jpg")
             if path:
@@ -1415,7 +1483,12 @@ def build_place_image(place_name: str, destination: str | None = None):
             _wikipedia_summary_image(query),
             _wikipedia_search_image(query),
         ):
-            if not candidate_url or not _image_url_matches_query(query, candidate_url):
+            normalized_candidate = (candidate_url or "").split("?", 1)[0]
+            if (
+                not candidate_url
+                or normalized_candidate in (excluded_urls or set())
+                or not _image_url_matches_query(query, candidate_url)
+            ):
                 continue
             path = download_image(candidate_url, suffix=".jpg")
             if path:
@@ -1767,6 +1840,37 @@ def rebuild_result_documents(result: dict) -> None:
         cover_path=result["cover_path"],
         day_images=result["day_images"],
     )
+
+
+def repair_non_visitable_places(result: dict) -> bool:
+    """Replace species/topics in an existing session with real attractions."""
+    days = result.get("days", [])
+    if not any(not is_valid_place_name(place) for day in days for place in day.get("places", [])):
+        return False
+
+    groups = get_landmark_groups_for_days(result.get("destination", ""), len(days))
+    used = {
+        place for day in days for place in day.get("places", [])
+        if is_valid_place_name(place)
+    }
+    for index, day in enumerate(days):
+        if index == 0 or index == len(days) - 1:
+            day["places"] = []
+            continue
+        valid_places = [place for place in day.get("places", []) if is_valid_place_name(place)]
+        candidates = groups[index % len(groups)] if groups else []
+        for candidate in candidates:
+            if len(valid_places) >= 4:
+                break
+            if candidate not in used and is_valid_place_name(candidate):
+                valid_places.append(candidate)
+                used.add(candidate)
+        day["places"] = valid_places[:4]
+
+    result["cover_path"], result["day_images"] = build_image_bundle(days, result["destination"])
+    rebuild_result_documents(result)
+    result["ui_version"] = time.time_ns()
+    return True
 
 
 def day_to_editor_html(day: dict) -> str:
@@ -2334,6 +2438,8 @@ if generate:
 result = st.session_state.get("trip_result")
 
 if result:
+    if repair_non_visitable_places(result):
+        st.session_state["trip_result"] = result
     ui_version = result.get("ui_version", 0)
     st.markdown("<div class='preview-heading'>Travel Plan</div>", unsafe_allow_html=True)
 
