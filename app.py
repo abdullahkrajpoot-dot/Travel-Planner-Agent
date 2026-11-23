@@ -962,10 +962,38 @@ Current plan: {json.dumps(days, default=str)}
         return updated
 
 
+IMAGE_INSTRUCTION_PATTERN = re.compile(
+    r"\b(?:image|images|im[a-z]{1,6}ge|im[a-z]{1,6}ges|img|picture|pictures|photo|photos|pic|pics|"
+    r"tasveer|tasveeren|tasveerain|tasvir|tasweer)\b",
+    re.IGNORECASE,
+)
+
+
+def is_image_change_instruction(instruction: str) -> bool:
+    return bool(IMAGE_INSTRUCTION_PATTERN.search(instruction or ""))
+
+
+def is_image_only_instruction(instruction: str) -> bool:
+    """Keep image commands away from the itinerary text editor.
+
+    A mixed command such as "change the first heading and replace its image" is
+    still allowed to edit both. Commands that only ask for images (including
+    common Roman-Urdu wording) must never be written into plan paragraphs.
+    """
+    if not is_image_change_instruction(instruction):
+        return False
+    text_targets = re.compile(
+        r"\b(?:text|word|words|sentence|paragraph|para|heading|title|morning|"
+        r"afternoon|evening|activity|activities|place|places|itinerary|plan\s+text)\b",
+        re.IGNORECASE,
+    )
+    return not bool(text_targets.search(instruction or ""))
+
+
 def apply_prompt_image_changes(result: dict, instruction: str, uploaded_path: str | None = None) -> bool:
     lowered = (instruction or "").lower()
-    image_words = r"(?:image|images|picture|pictures|photo|photos|pic|pics|tasveer|tasvir|tasweer)"
-    if not re.search(rf"\b{image_words}\b", lowered):
+    image_words = r"(?:image|images|im[a-z]{1,6}ge|im[a-z]{1,6}ges|img|picture|pictures|photo|photos|pic|pics|tasveer|tasveeren|tasveerain|tasvir|tasweer)"
+    if not is_image_change_instruction(lowered):
         return False
 
     destination = result["destination"]
@@ -2415,7 +2443,6 @@ if result:
         st.rerun()
 
     with st.expander("AI Change Assistant", expanded=False):
-        st.caption("Type your change, use + to attach an image, or paste an image with Ctrl+V.")
         prompt_response = multimodal_prompt(
             name="travel_plan_change",
             key=f"travel_plan_change_{ui_version}",
@@ -2438,10 +2465,12 @@ if result:
                     "mime_type": reference_image.type or "image/jpeg",
                 }
                 uploaded_path = save_pdf_ready_image(reference_bytes)
+            image_only_command = is_image_only_instruction(change_prompt)
             previous_places = [list(day.get("places", [])) for day in result["days"]]
-            result["days"] = revise_plan_with_prompt(
-                result["days"], change_prompt, result["destination"], reference_payload
-            )
+            if not image_only_command:
+                result["days"] = revise_plan_with_prompt(
+                    result["days"], change_prompt, result["destination"], reference_payload
+                )
             image_changed = apply_prompt_image_changes(result, change_prompt, uploaded_path)
             revised_places = [list(day.get("places", [])) for day in result["days"]]
             if not image_changed and revised_places != previous_places:
