@@ -857,9 +857,9 @@ def revise_plan_with_prompt(
             "fifth": 4, "5th": 4, "panchwa": 4,
         }
         target_index = 0
-        day_match = re.search(r"day\s*(\d+)", instruction, re.IGNORECASE)
-        if day_match:
-            target_index = max(int(day_match.group(1)) - 1, 0)
+        requested_day = extract_day_number(instruction)
+        if requested_day is not None:
+            target_index = max(requested_day - 1, 0)
         else:
             lowered = instruction.lower()
             for word, index in ordinal_map.items():
@@ -1013,6 +1013,34 @@ def is_image_only_instruction(instruction: str) -> bool:
     return not bool(text_targets.search(instruction or ""))
 
 
+def extract_day_number(instruction: str) -> int | None:
+    """Return a 1-based day number from common English/Roman-Urdu phrasing."""
+    lowered = (instruction or "").lower()
+    for pattern in (
+        r"\bday\s*(\d+)(?:st|nd|rd|th)?\b",
+        r"\b(\d+)(?:st|nd|rd|th)?\s*day\b",
+        r"\bdin\s*(\d+)\b",
+        r"\b(\d+)\s*(?:wa|wan|th)\s*din\b",
+    ):
+        match = re.search(pattern, lowered)
+        if match:
+            return max(int(match.group(1)), 1)
+    ordinal_days = {
+        "first": 1, "pehla": 1, "pehli": 1,
+        "second": 2, "dusra": 2, "doosra": 2,
+        "third": 3, "teesra": 3, "teesri": 3,
+        "fourth": 4, "chautha": 4, "chauthi": 4,
+        "fifth": 5, "panchwa": 5, "panchwi": 5,
+        "sixth": 6,
+        "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+    }
+    if re.search(r"\b(?:day|din)\b", lowered):
+        for word, number in ordinal_days.items():
+            if re.search(rf"\b{re.escape(word)}\b", lowered):
+                return number
+    return None
+
+
 def build_unique_replacement_image(result: dict, queries: list[str]) -> dict | None:
     """Find a relevant photo that is not already used anywhere in the plan."""
     existing_entries = [
@@ -1064,9 +1092,11 @@ def apply_prompt_image_changes(result: dict, instruction: str, uploaded_path: st
             result["cover_path"] = new_entry["path"]
             return True
 
-    day_match = re.search(r"day\s*(\d+)", lowered)
-    if day_match:
-        day_index = min(max(int(day_match.group(1)) - 1, 0), len(result["day_images"]) - 1)
+    requested_day = extract_day_number(lowered)
+    if requested_day is not None:
+        if requested_day > len(result["day_images"]):
+            return False
+        day_index = requested_day - 1
         entries = result["day_images"][day_index]
         day_places = result["days"][day_index].get("places") or [destination]
         query = replacement_query or day_places[0]
@@ -2440,6 +2470,9 @@ result = st.session_state.get("trip_result")
 if result:
     if repair_non_visitable_places(result):
         st.session_state["trip_result"] = result
+    ai_change_notice = st.session_state.pop("ai_change_notice", None)
+    if ai_change_notice:
+        st.toast(ai_change_notice, icon="✅")
     ui_version = result.get("ui_version", 0)
     st.markdown("<div class='preview-heading'>Travel Plan</div>", unsafe_allow_html=True)
 
@@ -2546,7 +2579,7 @@ if result:
 
     with st.expander("AI Change Assistant", expanded=False):
         prompt_response = st.chat_input(
-            placeholder="What would you like to change?",
+            placeholder="e.g., Change the Day 4 image or update its heading",
             key=f"travel_plan_change_{ui_version}",
             accept_file=True,
             file_type=["png", "jpg", "jpeg", "webp"],
@@ -2560,6 +2593,7 @@ if result:
             else (prompt_response.text or "").strip()
         )
         if change_prompt:
+            processing_notice = st.info("Applying your requested changes...", icon="⏳")
             reference_payload = None
             uploaded_path = None
             prompt_files = [] if isinstance(prompt_response, str) else list(prompt_response.files or [])
@@ -2578,15 +2612,21 @@ if result:
                     result["days"], change_prompt, result["destination"], reference_payload
                 )
             image_changed = apply_prompt_image_changes(result, change_prompt, uploaded_path)
-            revised_places = [list(day.get("places", [])) for day in result["days"]]
-            if not image_changed and revised_places != previous_places:
-                result["cover_path"], result["day_images"] = build_image_bundle(result["days"], result["destination"])
-            for day in result["days"]:
-                day.pop("editor_html", None)
-            result["ui_version"] = time.time_ns()
-            rebuild_result_documents(result)
-            st.session_state["trip_result"] = result
-            st.rerun()
+            if image_only_command and not image_changed:
+                processing_notice.empty()
+                st.warning("A different relevant image could not be found. Please name the place or attach an image.")
+            else:
+                revised_places = [list(day.get("places", [])) for day in result["days"]]
+                if not image_changed and revised_places != previous_places:
+                    result["cover_path"], result["day_images"] = build_image_bundle(result["days"], result["destination"])
+                for day in result["days"]:
+                    day.pop("editor_html", None)
+                result["ui_version"] = time.time_ns()
+                rebuild_result_documents(result)
+                st.session_state["trip_result"] = result
+                st.session_state["ai_change_notice"] = "Requested changes applied successfully."
+                processing_notice.empty()
+                st.rerun()
         else:
             st.warning("Please enter the change you want.")
 
