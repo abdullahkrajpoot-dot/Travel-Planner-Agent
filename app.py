@@ -19,7 +19,6 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 from fpdf import FPDF
 from PIL import Image, UnidentifiedImageError
-from streamlit_chat_prompt import prompt as multimodal_prompt
 from streamlit_quill import st_quill
 
 
@@ -2225,13 +2224,6 @@ st.markdown(
         box-shadow: 0 12px 30px rgba(0, 0, 0, .07) !important;
         padding: 1.4rem 1.5rem 1.5rem 1.75rem !important;
     }
-    .st-key-download_section::after {
-        content: "PDF  •  WORD";
-        color: #b90f17;
-        font-size: .72rem;
-        font-weight: 800;
-        letter-spacing: .12em;
-    }
     .st-key-download_section [data-testid="stCaptionContainer"] {
         color: #626262 !important;
     }
@@ -2443,23 +2435,27 @@ if result:
         st.rerun()
 
     with st.expander("AI Change Assistant", expanded=False):
-        prompt_response = multimodal_prompt(
-            name="travel_plan_change",
-            key=f"travel_plan_change_{ui_version}",
+        prompt_response = st.chat_input(
             placeholder="What would you like to change?",
-            main_bottom=False,
-            max_image_file_size=10 * 1024 * 1024,
-            max_image_count=1,
+            key=f"travel_plan_change_{ui_version}",
+            accept_file=True,
+            file_type=["png", "jpg", "jpeg", "webp"],
+            max_upload_size=10,
         )
 
     if prompt_response:
-        change_prompt = (prompt_response.text or "").strip()
+        change_prompt = (
+            prompt_response.strip()
+            if isinstance(prompt_response, str)
+            else (prompt_response.text or "").strip()
+        )
         if change_prompt:
             reference_payload = None
             uploaded_path = None
-            if prompt_response.images:
-                reference_image = prompt_response.images[0]
-                reference_bytes = base64.b64decode(reference_image.data)
+            prompt_files = [] if isinstance(prompt_response, str) else list(prompt_response.files or [])
+            if prompt_files:
+                reference_image = prompt_files[0]
+                reference_bytes = reference_image.getvalue()
                 reference_payload = {
                     "bytes": reference_bytes,
                     "mime_type": reference_image.type or "image/jpeg",
