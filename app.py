@@ -1041,7 +1041,41 @@ def extract_day_number(instruction: str) -> int | None:
     return None
 
 
-def build_unique_replacement_image(result: dict, queries: list[str]) -> dict | None:
+def extract_image_position(instruction: str) -> int | None:
+    """Return a zero-based image position when the prompt names one."""
+    lowered = (instruction or "").lower()
+    image_term = r"(?:image|picture|photo|pic|tasveer|tasvir|tasweer)"
+    ordinal_positions = {
+        "first": 0, "1st": 0, "pehli": 0, "pehla": 0,
+        "second": 1, "2nd": 1, "dusri": 1, "doosri": 1, "dusra": 1,
+        "third": 2, "3rd": 2, "teesri": 2, "teesra": 2,
+        "fourth": 3, "4th": 3, "chauthi": 3, "chautha": 3,
+    }
+    for word, position in ordinal_positions.items():
+        if re.search(rf"\b{re.escape(word)}\s+{image_term}\b", lowered):
+            return position
+        if re.search(rf"\b{image_term}\s+{re.escape(word)}\b", lowered):
+            return position
+    numeric = re.search(rf"\b{image_term}\s*(\d+)\b", lowered)
+    if numeric:
+        return max(int(numeric.group(1)) - 1, 0)
+    return None
+
+
+def requests_multiple_images(instruction: str) -> bool:
+    return bool(re.search(
+        r"\b(?:images|pictures|photos|pics|tasveeren|tasveerain)\b",
+        instruction or "",
+        re.IGNORECASE,
+    ))
+
+
+def build_unique_replacement_image(
+    result: dict,
+    queries: list[str],
+    retired_urls: set[str] | None = None,
+    retired_fingerprints: set[str] | None = None,
+) -> dict | None:
     """Find a relevant photo that is not already used anywhere in the plan."""
     existing_entries = [
         entry for entries in result.get("day_images", []) for entry in entries
@@ -1050,11 +1084,13 @@ def build_unique_replacement_image(result: dict, queries: list[str]) -> dict | N
         (entry.get("url") or "").split("?", 1)[0]
         for entry in existing_entries if entry.get("url")
     }
+    excluded_urls.update(retired_urls or set())
     existing_fingerprints = {
         fingerprint for fingerprint in (
             image_fingerprint(entry.get("path")) for entry in existing_entries
         ) if fingerprint
     }
+    existing_fingerprints.update(retired_fingerprints or set())
     destination = result.get("destination", "")
     for query in queries:
         for _ in range(3):
@@ -1099,15 +1135,48 @@ def apply_prompt_image_changes(result: dict, instruction: str, uploaded_path: st
         day_index = requested_day - 1
         entries = result["day_images"][day_index]
         day_places = result["days"][day_index].get("places") or [destination]
-        query = replacement_query or day_places[0]
+        requested_position = extract_image_position(lowered)
+
+        if requests_multiple_images(lowered) and not uploaded_path:
+            changed = False
+            retired_urls = {
+                (entry.get("url") or "").split("?", 1)[0]
+                for entry in entries if entry.get("url")
+            }
+            retired_fingerprints = {
+                fingerprint for fingerprint in (
+                    image_fingerprint(entry.get("path")) for entry in entries
+                ) if fingerprint
+            }
+            target_count = min(max(len(entries), 2), len(day_places), 2)
+            for image_index in range(target_count):
+                ordered_places = day_places[image_index:] + day_places[:image_index]
+                replacement = build_unique_replacement_image(
+                    result,
+                    ordered_places,
+                    retired_urls,
+                    retired_fingerprints,
+                )
+                if replacement and replacement.get("path"):
+                    if image_index < len(entries):
+                        entries[image_index] = replacement
+                    else:
+                        entries.append(replacement)
+                    changed = True
+            return changed
+
+        image_index = min(requested_position or 0, max(len(entries) - 1, 0))
+        place_index = min(image_index, len(day_places) - 1)
+        query = replacement_query or day_places[place_index]
+        ordered_queries = [query, *day_places[place_index + 1:], *day_places[:place_index]]
         replacement = (
             {"place": query, "path": uploaded_path}
             if uploaded_path
-            else build_unique_replacement_image(result, [query, *day_places[1:]])
+            else build_unique_replacement_image(result, ordered_queries)
         )
         if replacement and replacement.get("path"):
             if entries:
-                entries[0] = replacement
+                entries[image_index] = replacement
             else:
                 result["day_images"][day_index] = [replacement]
             return True
