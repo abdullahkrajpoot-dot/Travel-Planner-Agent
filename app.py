@@ -2468,15 +2468,39 @@ with st.sidebar:
         help="Enter both the destination city and country. Example: New York, USA",
     )
     plan_title = st.text_input("Plan Title", "Travel Plan")
-    travel_dates = st.date_input(
-        "Travel Dates",
-        value=(datetime.now().date(), datetime.now().date() + timedelta(days=5)),
-        min_value=datetime.now().date(),
+    today = date.today()
+    latest_travel_date = date(today.year + 10, 12, 31)
+
+    saved_departure_date = st.session_state.get("departure_date")
+    if (
+        not isinstance(saved_departure_date, date)
+        or saved_departure_date < today
+        or saved_departure_date > latest_travel_date
+    ):
+        st.session_state["departure_date"] = today
+
+    start_date = st.date_input(
+        "Departure",
+        min_value=today,
+        max_value=latest_travel_date,
+        format="YYYY/MM/DD",
+        help="Select any future date using the calendar month/year controls, or type YYYY/MM/DD.",
+        key="departure_date",
     )
-    if isinstance(travel_dates, (tuple, list)) and len(travel_dates) == 2:
-        start_date, end_date = travel_dates
-    else:
-        start_date = end_date = travel_dates[0] if isinstance(travel_dates, (tuple, list)) else travel_dates
+
+    default_return_date = min(start_date + timedelta(days=5), latest_travel_date)
+    saved_return_date = st.session_state.get("return_date")
+    if not isinstance(saved_return_date, date) or saved_return_date < start_date:
+        st.session_state["return_date"] = default_return_date
+
+    end_date = st.date_input(
+        "Return",
+        min_value=start_date,
+        max_value=latest_travel_date,
+        format="YYYY/MM/DD",
+        help="Return must be on or after Departure; future months and years are available.",
+        key="return_date",
+    )
     generate = st.button("Create Travel Plan")
 
 if end_date < start_date:
